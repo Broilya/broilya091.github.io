@@ -1,0 +1,1303 @@
+/**
+ * @file ВЗАИМОДЕЙСТВИЕ ПО WEBSOCKET - СОДЕРЖИТ ОСНОВНУЮ ЛОГИКУ РАБОТЫ С WEBSOCKET
+ */
+
+/**
+ * WS МЕТОДЫ
+ * @namespace
+ * @type {Object}
+ */
+ocWidget.websocket = {
+
+    trouble: false,
+
+    // есть ли соединение
+    isConnected: false,
+
+    // в процессе ли соединения
+    isConnecting: false,
+
+    // удерживается ли активность, т.е. идёт ли постоянный поток действий от пользователя
+    isOnHold: false,
+
+    // заблокированы ли действия с вебсокетом
+    isBlocked: false,
+
+    // исходит ли запрос от клиента
+    isInitializedByClient: false,
+
+    // id таймера активности
+    timerId: 0,
+
+    // Таймаут замедления
+    debounceTimeout: 90,
+
+    // Таймаут периода активности. Если за это время не было действий, то рвем вебсокет.
+    activityTimeout: 30*60*1000,
+
+    // режим наблюдения за активностью пользователя на странице
+    watchingUsers: false,
+
+    again: false,
+
+    /**
+     * Подключение к WS API
+     * @param  {boolean} again - Выполняется ли подключение второй+ раз?
+     * @return {void}
+     */
+    connect: function (again) {
+
+        this.again = again ? again : false;
+
+        ocWidget.websocket.block = !ocWidget.pathConstructor.getCoreWebSocketPath() ? true : false;
+
+        if (ocWidget.websocket.isConnecting || ocWidget.websocket.isConnected) {
+            return;
+        }
+        ocWidget.websocket.isConnecting = true;
+
+        if (ocWidget.websocket.block) return;
+        if (ocWidget.options.behaviour.debug)
+            console.log('ocWidget: Connecting to ' + ocWidget.pathConstructor.getCoreWebSocketPath());
+        ocWidget.websocket.listen = new WebSocket(ocWidget.pathConstructor.getCoreWebSocketPath());
+        ocWidget.websocket.listen.onopen = ocWidget.websocket.onopen;
+        ocWidget.websocket.listen.onclose = ocWidget.websocket.onclose;
+
+    },
+
+    /**
+     * Отключение от WS
+     * @return {void}
+     */
+    disconnect: function () {
+        ocWidget.websocket.block = true;
+        ocWidget.websocket.listen.close();
+        if (ocWidget.options.behaviour.debug) {
+            console.log('ocWidget: Disconnecting...');
+        }
+    },
+
+    /**
+     * Проверка подключения - если WS соединение было разорвано, произойдет переподключение
+     * @return {void}
+     */
+    check: function () {
+
+        if (ocWidget.websocket.listen.readyState !== 1) {
+            var time = ocWidget.tools.randomNum(1);
+            if (ocWidget.options.behaviour.debug)
+                console.log('ocWidget: wait ' + time + ' seconds...');
+            setTimeout(function () {
+                ocWidget.init.start('AGAIN');
+            }, time * 1000);
+        }
+
+    },
+    /**
+     * Мониторинг активности пользователя на странице
+     * вешается обработчик на события
+     * click, dblclick, mousemove, keydown, touchmove, touchstart
+     * событие storage нужно для коммуникации между вкладками, чтобы
+     * активная вкладка информировала неактивные, что рвать соединение не надо.
+     * @return {void}
+     */
+     watchUserActivity: function (eventsList) {
+         var evList = eventsList ? eventsList : 'click dblclick mousemove keydown touchmove touchstart';
+         ocWidget.tools.addEventListeners(window, evList, ocWidget.tools.debounce(ocWidget.websocket.handleConnection, ocWidget.websocket.debounceTimeout));
+         ocWidget.websocket.watchingUsers = true;
+     },
+
+     /**
+      * Многоцелевая функция. Управляет периодом активности и при определенных условиях
+      * закрывает/открывает соединение вебсокета. По периоду активности пользователя идея такая:
+      * если есть какие-то действия на странице (из watchUserActivity), период
+      * активности (activityTimeout) отсчитывается заново от последнего действия.
+      * @return {void}
+      */
+     handleConnection: function(event) {
+         var e = event || window.event,
+             closeWebsocketConnection = function func() {
+             if(ocWidget.websocket.isOnHold) {
+                 /* если идет постоянный поток активности, но кончился таймаут по
+                 активности, то соединение не рвем, так как идет активность, и
+                 начинаем отсчет заново */
+                 ocWidget.websocket.timerId = setTimeout(func, ocWidget.websocket.activityTimeout);
+                 return;
+             }
+             if(!ocWidget.websocket.isBlocked && ocWidget.websocket.isConnected) {
+                 ocWidget.websocket.isBlocked = true;
+                 ocWidget.websocket.isInitializedByClient = true;
+                 ocWidget.websocket.listen.close();
+                 ocWidget.chat.hide();
+             }
+         };
+
+
+         if(!ocWidget.websocket.timerId && !ocWidget.websocket.isConnected &&
+           !ocWidget.websocket.isBlocked) {
+             ocWidget.websocket.isBlocked = true;
+             // на самом деле, это функция перезагрузки виджета, просто странное название
+             ocWidget.chat.destroy();
+             return;
+         }
+
+         if(ocWidget.websocket.timerId) {
+             clearTimeout(ocWidget.websocket.timerId);
+         }
+
+         ocWidget.websocket.timerId = setTimeout(closeWebsocketConnection, ocWidget.websocket.activityTimeout);
+     },
+
+    /**
+     * Отправка пакета на сервер
+     * @param  {object} msg - пакет
+     * @return {void}
+     */
+    send: function (msg) {
+        msg = msg || {};
+        if(ocWidget.websocket.listen.readyState !== 1) {
+            var self = this;
+            setTimeout(function() {
+                self.send(msg);
+            }, 100);
+        } else {
+            msg.token = ocWidget.storage.local.get('token');
+            msg.projectId = ocWidget.options.projectId;
+            msg.messengerType = ocWidget.options.channelId;
+            ocWidget.websocket.listen.send(JSON.stringify(msg));
+        }
+    },
+
+    /**
+     * Коллбек при удачном подключении
+     * @return {void}
+     */
+    onopen: function () {
+        if (ocWidget.options.behaviour.debug) {
+            console.log('ocWidget: WS connected');
+        }
+
+        ocWidget.websocket.isConnected = true;
+        ocWidget.websocket.isConnecting = false;
+        ocWidget.websocket.isBlocked = false;
+
+        ocWidget.websocket.listen.onmessage = ocWidget.websocket.onmessage;
+        ocWidget.websocket.listen.onerror = ocWidget.websocket.onerror;
+        ocWidget.websocket.handleConnection();
+        if(!ocWidget.websocket.watchingUsers) {
+            ocWidget.websocket.watchUserActivity();
+        }
+
+        /*
+         * Если виджет не отрисован и не стоит настройка "отрисовывать виджет, только когда есть операторы онлайн" - отрисовать виджет
+         */
+        if (!ocWidget.render.is.rendered && (!ocWidget.options.behaviour.showWidgetOnlyIfAgentsOnline || (ocWidget.storage.local.get('chat_state') == 'opened' && ocWidget.options.behaviour.showWidgetOnlyIfAgentsOnline))){
+            ocWidget.render.start();
+        }
+
+        /* Запрос кол-ва непрочитанных */
+        // ocWidget.bar.unreadCounter.request();
+
+        /* Включаем PING PONG */
+        ocWidget.websocket.ping.init();
+
+        /* 
+         * Если в ocWidget.websocket.connect был передан параметр again
+         * И это функция - вызвать ее (функция ocWidget.chat.auth() - тот самый костыль)
+         */
+        if (typeof ocWidget.websocket.again === 'function') ocWidget.websocket.again();
+        /* Если это не функция - то запустить INIT с самого начала. */
+        else if (ocWidget.websocket.again) ocWidget.chat.init();
+
+        ocWidget.chat.alert.reset();
+        ocWidget.chat.offline.hide();
+
+        /**
+         * Первичная проверка наличия свободных операторов
+         * когда не открыт чат
+         */
+        if (ocWidget.storage.local.get('chat_state') != 'opened'
+            && ocWidget.options.behaviour.isBarShown === 1 
+            && (ocWidget.options.behaviour.showWidgetOnlyIfAgentsOnline
+                || !ocWidget.storage.local.get('barTimerDone'))) {
+            var data = {};
+            if (ocWidget.options.auth.group_id) {
+                data.mrf = ocWidget.options.auth.group_id;
+            }
+            ocWidget.auth.check_chat_slot_available(data);
+            // запуск таймера триггерных сообщений
+            if (ocWidget.bar.message.trigger.check()) {
+                ocWidget.bar.message.trigger.init()
+            }
+        }
+
+    },
+
+    /**
+     * Коллбек получения сообщения
+     * @param  {object} msg - пакет
+     * @return {void}
+     */
+    onmessage: function (msg) {
+        if (msg === undefined || msg.data === undefined)
+            return;
+
+        msg = JSON.parse(msg.data);
+
+        /*
+         * ОБРАБОТКА ПАКЕТОВ - ACTION
+         * @param  {boolean} typeof ocWidget.websocket.actions[msg.action] - если есть такой ACTION - ACTION()
+         * @return {void}
+         */
+        if (typeof ocWidget.websocket.actions[msg.action] == 'function') {
+
+            if (msg.action === 'co_request') {
+                ocWidget.websocket.actions[msg.action](msg);
+                return;
+            }
+            ocWidget.websocket.actions[msg.action](msg.data);
+        }
+        /*
+         * ОБРАБОТКА ОШИБОК - РАБОТАЕТ ТАКЖЕ, КАК ACTION
+         * @param  {object} msg.errors - объект ошибок
+         */
+        else if (msg.errors) {
+            for (var error in msg.errors) {
+                if(msg.errors.hasOwnProperty(error)) {
+                    if (typeof ocWidget.websocket.errors[error] == 'function')
+                    ocWidget.websocket.errors[error](msg.errors);
+                }
+            }
+        }
+    },
+
+    /**
+     * Коллбек при неудачном подключении
+     * @param  {object} error - ошибка
+     * @return {void}
+     */
+    onerror: function (error) {
+        console.log(error);
+    },
+
+    /**
+     * Коллбек при закрытии соединения
+     * @param  {object} e - объект закрытия соединения
+     * @return {void}
+     */
+    onclose: function (e) {
+        if (ocWidget.options.behaviour.debug) {
+            console.log('ocWidget: Connection is closed');
+        }
+
+        ocWidget.websocket.isConnected = false;
+
+        //server closes the connection right after csi,
+        // but we don't want to reinit(destroy() in our case) widget while csi screen is still viewed by the user
+        if (ocWidget.chat.csi.is.opened) {
+            return false;
+        }
+
+        ocWidget.websocket.timerId = 0;
+        ocWidget.websocket.isBlocked = false;
+
+        ocWidget.chat.offline.block();
+        if (ocWidget.options.behaviour.debug) {
+            console.log('Code: ' + e.code, 'Reason: ' + e.reason);
+        }
+
+        ocWidget.websocket.ping.destroy();
+        ocWidget.auth.inProgress = false;
+
+        if (e.code != 1000 && e.code != 1005 && e.code != 1006) {
+            ocWidget.auth.isDone = false;
+            ocWidget.init.isDone = false;
+            ocWidget.chat.alert.set('Уупс! <br> что-то пошло не так, пожалуйста перезагрузите страницу.').show();
+            ocWidget.websocket.check();
+        } else if (e.code === 1007) {
+            ocWidget.init.start(true);
+        } else if (e.code === 1000 || e.code === 1005 || e.code === 1006) {
+            ocWidget.chat.destroy();
+            ocWidget.websocket.isInitializedByClient = false;
+            ocWidget.websocket.isBlocked = false;
+        }
+    },
+
+    /**
+     * Коллбек при входе в онлайн (после потери соединения)
+     * @param  {object} e - Событие браузера
+     * @return {void}
+     */
+    onOnline: function (e) {
+        if (ocWidget.options.behaviour.debug)
+            console.log('ocWidget: Connection UP.');
+
+        if (!ocWidget.options.settings.available_operator && !ocWidget.chat.msg.is.active) {
+            // ocWidget.chat.alert.set('Здравствуйте! <br> К сожалению, сейчас все операторы заняты, ожидайте.');
+            ocWidget.chat.offline.show();
+        } else if (!ocWidget.options.settings.available_operator && ocWidget.chat.msg.is.active) {
+            ocWidget.chat.offline.show(true);
+        } else {
+            ocWidget.chat.alert.reset();
+            if (ocWidget.chat.msg.is.active) ocWidget.chat.alert.hide();
+            ocWidget.chat.offline.hide();
+            ocWidget.chat.msg.el.msgTextarea.focus();
+        }
+    },
+
+    /**
+     * Коллбек при потере соединения
+     * @param  {object} e Событие браузера
+     * @return {void}
+     */
+    onOffline: function (e) {
+        if (ocWidget.options.behaviour.debug)
+            console.log('ocWidget: Connection DOWN.');
+        ocWidget.chat.alert.set('Соединение <br> с интернетом потеряно, проверьте подключение и перезагрузите страницу.').show();
+        ocWidget.chat.offline.block();
+        ocWidget.chat.msg.el.msgTextarea.blur();
+    },
+
+    /**
+     * ТУТ СОДЕРЖАТСЯ ВСЕ МЕТОДЫ WEBSOCKET, ВОЗВРАЩАЮЩИЕСЯ С СЕРВЕРА
+     * @namespace ocWidget.websocket.actions
+     * @type {Object}
+     */
+    actions: {
+
+        /**
+         * Подписка на получение количества непрочитанных сообщений
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        subscribed_unread_counter_update: function (data) {
+            ocWidget.bar.unreadCounter.response(data)
+            if (ocWidget.options.behaviour.debug)
+                console.log('subscribed_unread_counter_update', data);
+            // ВОТ ТУТ
+            return;
+
+            if (data.unread_counter == 0) ocWidget.bar.unreadCounter.remove();
+
+            else ocWidget.bar.unreadCounter.add(data.unread_counter);
+        },
+
+        /**
+         * Получение количества непрочитанных сообщений
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        unread_counter_update: function (data) {
+
+            if (!ocWidget.options.auth.login) return;
+            if (ocWidget.options.behaviour.debug)
+                console.log('unread_counter_update', data);
+            /* Логика выключена из-за отсутствия этого метода на ядре */
+            return;
+
+            if (data.unread_counter == 0) ocWidget.bar.unreadCounter.remove();
+
+            else ocWidget.bar.unreadCounter.add(data.unread_counter);
+        },
+
+        /**
+         * Получение typing ( от оператора )
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        typing: function (data) {
+            /* Логика выключена из-за отсутствия этого метода на ядре */
+            return;
+            ocWidget.chat.msg.typing.init();
+        },
+
+        /**
+         *  Получение подтверждения на запрос АВТОРИЗАЦИИ
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        auth_replay: function (data) {
+            ocWidget.auth.response(data);
+        },
+
+        /**
+         * Получение информации о наличии свободных операторов
+         * @param {Object[]} data
+         * @param {string} data.chat_slot_available - Наличие свободных чат слотов 'true' или 'false'
+         */
+        chat_slot_available_reply: function (data) {
+
+            data['available_operator'] = data['chat_slot_available'] === 'true' ? 1 : 0;
+            ocWidget.auth.chat_slot_available = data['chat_slot_available'];
+
+            ocWidget.chat.loading.hide();
+            if (ocWidget.auth.inProgress && ocWidget.auth.chat_slot_available != "false") {
+                ocWidget.auth.inProgress = false;
+                ocWidget.chat.auth.request();
+            }
+
+            ocWidget.websocket.actions.state(data);
+        },
+
+        /**
+         * Получение запроса CSI ( от оператора )
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        csi_request: function () {
+            ocWidget.chat.csi.init();
+        },
+
+        /**
+         * Подтверждение получения запроса CSI ( от оператора )
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        csi_received: function () {
+            ocWidget.chat.auth.prechats.savedPrechatFieldsData = {};
+            var client_info = ocWidget.storage.local.get('client-info');
+            if(typeof client_info === 'object') {
+                delete client_info.skillId;
+                ocWidget.storage.local.set('client-info', client_info);
+            }
+        },
+
+        /**
+         * Подтверждени получения пакета ( от  оператора )
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        receive_message: function (data) {
+
+            ocWidget.chat.msg.message.receive(data);
+
+            var uuid = ocWidget.methods.message_received.uuid = ocWidget.tools.randomStr(10);
+            var data = ocWidget.methods.message_received.request = {
+                action: 'message_received',
+                data: {
+                    id: Object.keys(data.data)
+                },
+                uuid: uuid
+            };
+
+            /* Подтверждение получения ( от клиента ) */
+            ocWidget.websocket.send(data);
+
+            var uuid = ocWidget.methods.message_received.uuid = ocWidget.tools.randomStr(10);
+
+            if (ocWidget.chat.is.opened) {
+                /* Подтверждение прочтения */
+                ocWidget.websocket.send({
+                    action: 'message_read',
+                    data: {
+                        id: +ocWidget.chat.msg.message.lastMessage
+                    },
+                    uuid: uuid
+                });
+            }
+
+        },
+
+        /**
+         * Получение агента
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        receive_agent: function (data) {
+
+            // if (!data.agent_name) return;
+
+            ocWidget.auth.operator[data.agent_id] = {};
+
+            for (var key in data) {
+                if(data.hasOwnProperty(key)) {
+                    ocWidget.auth.operator[data.agent_id][key] = data[key];
+                    ocWidget.auth.operator[key] = data[key];
+                }
+            }
+
+            /*
+             * Если у оператора есть фотография
+             * @param  {string} data.agent_photo - аватар
+             * @return {void}
+             */
+            if (data.agent_photo) {
+                ocWidget.auth.operator[data.agent_id].agent_photo = ocWidget.pathConstructor.getFileStoragePath('thumb') + data.agent_photo;
+
+                ocWidget.auth.operator.agent_photo = ocWidget.pathConstructor.getFileStoragePath('thumb') + data.agent_photo;
+            }
+            /* Если фотографии нет и передана пустая строка "" - берем дефолтный аватар */
+            else {
+                ocWidget.auth.operator[data.agent_id].agent_photo = ocWidget.options.behaviour.styles.logo.imgBase64;
+                ocWidget.auth.operator.agent_photo = ocWidget.options.behaviour.styles.logo.imgBase64;
+            }
+
+            ocWidget.storage.local.set('operator', ocWidget.auth.operator);
+
+            ocWidget.chat.msg.message.render.operator(data.agent_id);
+
+            ocWidget.tools.scrollToBottom();
+
+        },
+
+        /**
+         * Получение запроса кобраузинга
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        co_request: function (data) {
+            if(!ocWidget.options.behaviour.cobrowsing.isEnabled){
+                if (ocWidget.options.behaviour.debug){
+                    console.log('ocWidget: Cobrowsing can\'t  start because it switched off');
+                }
+                return;
+            }
+            ocWidget.storage.session.set('co_request', data);
+            ocWidget.chat.msg.cobrowsing.request(data);
+        },
+
+        /**
+         * Получение подтверждения начала кобраузинга
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        co_started: function (data) {
+            ocCobrowsing.start(data);
+        },
+
+        /**
+         * Получение ответа на запрос истории ( автоматически присылается после авторизации )
+         * @param  {object} data - пакет
+         * @return {void}
+         */
+        history_replay: function (data) {
+            /*
+             * Если пагинация включена, все новые сообщения будут отрисовываться над историей (ПАГИНАЦИЯ)
+             * @param  {boolean} ocWidget.chat.msg.pagination.active - включена ли пагинация
+             */
+
+            if (ocWidget.chat.msg.pagination.active) {
+
+                var messagesGroupSort = [],
+                    key, length, i;
+
+                for (var message in data.messages) {
+                    if(data.messages.hasOwnProperty(message)) {
+                        messagesGroupSort.push(message);
+                    }
+                }
+
+
+                /* Сортируем сообщения в обратном порядке т.к это пагинация */
+                messagesGroupSort.sort(function (A, B) {
+                    return +B - +A;
+                });
+
+                length = messagesGroupSort.length;
+
+                ocWidget.tpls.toggleHistoryBtn(!!length);
+
+                for (i = 0; i < length; i++) {
+                    key = messagesGroupSort[i];
+                    /* передаем отсортированные сообщения в отрисовку */
+                    ocWidget.chat.msg.pagination.response(data.messages[key]);
+                }
+
+
+                if (ocWidget.chat.auth.firstMessage) {
+                    ocWidget.chat.msg.message.send(ocWidget.chat.auth.firstMessage);
+                }
+            }
+            /* Если это первый запрос истории */
+            else {
+
+                /* ЭКРАН КОТОРЫЙ МЫ ПОКАЖЕМ (с историей или приветствие) */
+                var page;
+
+                /*
+                 * Есть ли какие нибудь сообщения вообще?
+                 * @type {boolean}
+                 */
+                var chat_now = Object.keys(data.messages).length == 0 ? false : true;
+
+                ocWidget.tpls.toggleHistoryBtn(chat_now);
+
+                /*
+                 * Логика сохранения операторов
+                 * @param  {object} data.agents - если передали объект с операторами
+                 */
+                if (data.agents) {
+
+                    for (var agent in data.agents) {
+
+                        if(data.agents.hasOwnProperty(agent)) {
+
+                            ocWidget.auth.operator[agent] = {};
+                            /* Сохраняем всех операторов в ocWidget.auth.operator */
+                            for (var key in data.agents[agent]) {
+                                if(data.agents[agent].hasOwnProperty(key)) {
+                                    ocWidget.auth.operator[agent][key] = data.agents[agent][key]
+                                    ocWidget.auth.operator[key] = data.agents[agent][key]
+                                }
+                            }
+    
+                            /*
+                             * Если у оператора есть фотография
+                             * @param  {string} data.agent_photo - аватар
+                             */
+                            if (data.agents[agent].agent_photo) {
+                                ocWidget.auth.operator[agent].agent_photo = ocWidget.pathConstructor.getFileStoragePath('thumb') + data.agents[agent].agent_photo;
+                                ocWidget.auth.operator.agent_photo = ocWidget.pathConstructor.getFileStoragePath('thumb') + data.agents[agent].agent_photo;
+                            }
+                            /* Если фотографии нет и передана пустая строка "" - берем дефолтный аватар */
+                            else {
+                                ocWidget.auth.operator[agent].agent_photo = ocWidget.options.behaviour.styles.logo.imgBase64;
+                                ocWidget.auth.operator.agent_photo = ocWidget.options.behaviour.styles.logo.imgBase64;
+                            }
+    
+                            /* Сохраняем операторов для отрисовки при перезагрузке F5 */
+                            ocWidget.storage.local.set('operator' + agent, ocWidget.auth.operator);
+                        }
+                    }
+
+                }
+
+                /*
+                 * Если был передан не пустой объект -
+                 * создаем регулярку для проверки файлов разрешенных размеров при отправке
+                 */
+                if (Object.keys(data.allowed_ext).length)
+                    ocWidget.chat.msg.fileUpload.allowedExt = new RegExp('(' + data.allowed_ext.join('|') + ')\\b', 'i');
+
+                if (data.csi_text) ocWidget.chat.csi.text = data.csi_text;
+
+
+                ////////// НИЖЕ НАЧИНАЕТСЯ ОСНОВНАЯ ЛОГИКА СОРТИРОВКИ И ОТРИСОВКИ САМОЙ ИСТОРИИ - data.messages //////////
+
+                /*
+                 * 1 СЛУЧАЙ - ЕСЛИ У КЛИЕНТА НЕТ ИСТОРИИ И НЕТ ДОСТУПНЫХ ОПЕРАТОРОВ
+                 * @param  {boolean} !chat_now && !data.available_operator - Нет сообщений в data.messages и нет доступных операторов
+                 */
+                if (!chat_now && !data.available_operator) {
+
+                    ocWidget.options.settings.online = false;
+
+                    page = 'alert';
+
+                    ocWidget.chat.alert.set('Здравствуйте! <br> К сожалению, сейчас все операторы заняты, ожидайте.');
+
+                    ocWidget.chat.offline.show();
+
+                }
+                /*
+                 * 2 СЛУЧАЙ - ЕСЛИ У КЛИЕНТА ЕСТЬ ИСТОРИЯ И ЕСТЬ ДОСТУПНЫЕ ОПЕРАТОРЫ
+                 * @param  {boolean} chat_now && data.available_operator - Есть 1+ сообщение в data.messages и есть доступные операторы
+                 */
+                else if (chat_now && data.available_operator) {
+
+                    ocWidget.options.settings.online = true;
+
+                    ocWidget.chat.offline.hide();
+
+                    page = 'msg';
+
+                    var messagesGroupSort = [],
+                        key, length, i;
+
+                    for (var message in data.messages) {
+                        if(data.messages.hasOwnProperty(message)) {
+                            messagesGroupSort.push(message);
+                        }
+                    }
+
+                    messagesGroupSort.sort(function (A, B) {
+                        return +A - +B;
+                    });
+
+                    length = messagesGroupSort.length;
+
+                    for (i = 0; i < length; i++) {
+                        key = messagesGroupSort[i];
+                        ocWidget.chat.msg.message.render.history(data.messages[key]);
+                    }
+
+                    if(!data.chat_now && ocWidget.storage.session.get('co_request')){
+                        ocWidget.storage.session.reset()
+                    } else 
+                    if (ocWidget.storage.session.get('co_request')) {
+                        var data = ocWidget.storage.session.get('co_request');
+                        ocWidget.chat.msg.cobrowsing.request(data);
+                    }
+
+                    /*
+                     * ЕСЛИ ЕСТЬ НЕОТПРАВЛЕННЫЕ СООБЩЕНИЯ - отрисуем их
+                     * (Срабатывает при перезагрузке, неотправленные сообщения можно хранить только на клиенте)
+                     */
+                    var notDelivered = ocWidget.storage.local.get('notDeliveredData');
+                    for (var message in notDelivered) {
+
+                        if(notDelivered.hasOwnProperty(message)) {
+
+                            if (notDelivered[message]) {
+
+                                var msg;
+    
+                                if (notDelivered[message].type === 1) { // Текстовое сообщение
+                                    msg = RTC().create('div', {
+                                        id: notDelivered[message].uuid,
+                                        className: 'ocWidget-message-error ocAnimation-fadeIn ',
+                                        innerHTML: ocWidget.tpls.sentMessage({
+                                            text: notDelivered[message].text,
+                                            date: ocWidget.tools.date()
+                                        })
+                                    });
+    
+                                } else if (notDelivered[message].type === 2) { // Изображение
+                                    msg = RTC().create('div', {
+                                        id: notDelivered[message].uuid,
+                                        className: 'ocWidget-message-error ocAnimation-fadeIn',
+                                        innerHTML: ocWidget.tpls.sentImage({
+                                            src: notDelivered[message].media_thumb,
+                                            modal: notDelivered[message].media_url,
+                                            date: ocWidget.tools.date()
+                                        })
+                                    });
+    
+                                } else if (notDelivered[message].type === 5) { // Файл
+    
+                                    msg = RTC().create('div', {
+                                        id: notDelivered[message].uuid,
+                                        className: 'ocWidget-message-error ocAnimation-fadeIn',
+                                        innerHTML: ocWidget.tpls.sentDoc({
+                                            file: {
+                                                name: 'Файл',
+                                                type: 'Файл',
+                                                href: notDelivered[message].media_url
+                                            },
+                                            date: ocWidget.tools.date()
+                                        })
+                                    });
+    
+                                }
+    
+                                ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            }
+                        }
+
+                    }
+
+                    /* Отрисовка системного сообщения полученного в ответе на auth  */
+                    if (ocWidget.auth.startMessage) {
+                        var message = RTC().create('div', {
+                            className: 'ocWidget__message ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.systemMessage({
+                                text: ocWidget.auth.startMessage,
+                                date: ocWidget.tools.date(undefined, 'operator')
+                            })
+                        });
+
+                        ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                    }
+
+                    /*
+                     * ОТПРАВЛЯЕМ СООБЩЕНИЕ ИЗ ПРЕЧАТ ПОЛЕЙ -
+                     * Если в пречат полях было отправленно поле "ВВЕДИТЕ СООБЩЕНИЕ"
+                     */
+                    if (ocWidget.chat.auth.firstMessage) {
+                        ocWidget.chat.msg.message.send(ocWidget.chat.auth.firstMessage);
+                    }
+                    ocWidget.tools.scrollToBottom();
+                    /**
+                     * Показ второго экрана пречатов для пользователей
+                     * с историей сообщений.
+                     */
+                    if( ocWidget.options.behaviour.prechats.secondary.length
+                        && !(data.chat_now || data.action == 'co_request')
+                        && ocWidget.options.behaviour.prechats.isEnabled) {
+                        ocWidget.chat.auth.show('secondary');
+                    }
+
+                    /* ЕСЛИ НЕТ АКТИВОЙ ЧАТ СЕССИИ */
+                    if (!data.chat_now) {
+                        ocWidget.chat.msg.message.render.operators = [];
+
+                        if(ocCobrowsing && ocCobrowsing.param.isEnabled) {
+                            ocCobrowsing.destroy()
+                        }
+                    }
+                }
+                /*
+                 * 3 СЛУЧАЙ - ЕСЛИ У КЛИЕНТА ЕСТЬ ИСТОРИЯ И ДОСТУПНЫХ ОПЕРАТОРОВ НЕТ
+                 * @param  {boolean} chat_now && !data.available_operator - Есть 1+ сообщение в data.messages, но нет свободных операторов
+                 */
+                else if (chat_now && !data.available_operator) {
+
+                    ocWidget.options.settings.online = true;
+
+                    ocWidget.chat.offline.hide();
+
+                    page = 'msg';
+
+                    var messagesGroupSort = [],
+                        key, length, i;
+
+                    for (var message in data.messages) {
+                        if(data.messages.hasOwnProperty(message)) {
+                            messagesGroupSort.push(message);
+                        }
+                    }
+
+                    messagesGroupSort.sort(function (A, B) {
+                        return +A - +B;
+                    });
+
+                    length = messagesGroupSort.length;
+
+                    for (i = 0; i < length; i++) {
+                        key = messagesGroupSort[i];
+                        ocWidget.chat.msg.message.render.history(data.messages[key]);
+                    }
+
+
+                    /* Неотправленные сообщения - отрисовываем снова при F5 */
+                    var notDelivered = ocWidget.storage.local.get('notDeliveredData');
+                    for (var message in notDelivered) {
+
+                        if(notDelivered.hasOwnProperty(message)) {
+                            if (notDelivered[message]) {
+
+                                var tpl;
+    
+                                if (notDelivered[message].type === 1) {
+    
+                                    tpl = RTC().create('div', {
+                                        id: notDelivered[message].uuid,
+                                        className: 'ocWidget-message-error ocAnimation-fadeIn',
+                                        innerHTML: ocWidget.tpls.sentMessage({
+                                            text: notDelivered[message].text,
+                                            date: ocWidget.tools.date()
+                                        })
+                                    });
+    
+                                } else if (notDelivered[message].type === 2) {
+    
+                                    tpl = RTC().create('div', {
+                                        id: notDelivered[message].uuid,
+                                        className: 'ocWidget-message-error ocAnimation-fadeIn',
+                                        innerHTML: ocWidget.tpls.sentImage({
+                                            src: notDelivered[message].media_thumb,
+                                            modal: notDelivered[message].media_url,
+                                            date: ocWidget.tools.date()
+                                        })
+                                    });
+    
+                                }
+    
+                                ocWidget.chat.msg.el.dialog.appendChild(tpl);
+    
+                            }
+                        }
+
+                    }
+
+                    /* Отрисовка системного сообщения полученного в ответе на auth */
+                    if (ocWidget.auth.startMessage) {
+
+                        var message = RTC().create('div', {
+                            className: 'ocWidget__message ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.systemMessage({
+                                text: ocWidget.auth.startMessage,
+                                date: ocWidget.tools.date(undefined, 'operator')
+                            })
+                        });
+
+                        ocWidget.chat.msg.el.dialog.appendChild(message);
+
+                    }
+                    ocWidget.tools.scrollToBottom();
+                    /*
+                     * ЕСЛИ НЕТ АКТИВОЙ ЧАТ СЕССИИ
+                     * @param  {boolean} !data.chat_now - если у клиента не было активной сессии
+                     */
+                    if (!data.chat_now) {
+                        ocWidget.chat.offline.show(true);
+                        ocWidget.chat.msg.message.render.operators = [];
+                    }
+                    /*
+                     * ОТПРАВЛЯЕМ СООБЩЕНИЕ ИЗ ПРЕЧАТ ПОЛЕЙ -
+                     * Если в пречат полях было отправленно поле "ВВЕДИТЕ СООБЩЕНИЕ"
+                     */
+                    else if (ocWidget.chat.auth.firstMessage) {
+                        ocWidget.chat.msg.message.send(ocWidget.chat.auth.firstMessage);
+                    }
+                }
+                /*
+                 * ЕСЛИ У КЛИЕНТА НЕТ ИСТОРИИ И ЕСТЬ ДОСТУПНЫЕ ОПЕРАТОРОВ
+                 * @param  {boolean} !chat_now && data.available_operator - если нет сообщений в data.messages и есть свободные операторы
+                 */
+                else if (!chat_now && data.available_operator) {
+
+                    ocWidget.options.settings.online = true;
+
+                    ocWidget.chat.offline.hide();
+
+                    page = 'alert';
+
+                    ocWidget.auth.startMessage ? ocWidget.chat.alert.set(ocWidget.auth.startMessage) : ocWidget.chat.alert.reset();
+
+                    /*
+                     * ОТПРАВЛЯЕМ СООБЩЕНИЕ ИЗ ПРЕЧАТ ПОЛЕЙ -
+                     * Если в пречат полях было отправленно поле "ВВЕДИТЕ СООБЩЕНИЕ"
+                     */
+                    if (ocWidget.chat.auth.firstMessage) {
+                        ocWidget.chat.msg.message.send(ocWidget.chat.auth.firstMessage);
+                    }
+                    ocWidget.tools.scrollToBottom();
+                    /**
+                     * Показ второго экрана пречатов для пользователей
+                     * без истории сообщений и без посланного первого сообщений.
+                     * Т.е. если первое сообщение послано, то история уже есть.
+                     */
+                    if(ocWidget.options.behaviour.prechats.secondary.length 
+                        && !data.chat_now 
+                        && ocWidget.options.behaviour.prechats.isEnabled 
+                        && !ocWidget.chat.auth.firstMessage) {
+                            ocWidget.chat.auth.show('secondary');
+                    }
+
+                    if(typeof ocCobrowsing !== 'undefined' && ocCobrowsing.param.isEnabled) {
+                        ocCobrowsing.destroy()
+                    }
+                }
+
+                /* В ЗАВИСИМОСТИ ОТ 1 || 2 || 3 || 4 СЛУЧАЯ - показываем нужный нам экран */
+
+                /* Показываем экран "приветствия" или "нас нет онлайн" */
+                if (page === 'alert')
+                    ocWidget.chat.alert.show();
+                /* Показываем экран чата */
+                else RTC(ocWidget.el.widget).addClass('ocWidget-' + page);
+
+                ocWidget.chat.loading.hide();
+
+                /* ЕСЛИ БЫЛИ UNREAD'ы - отрисуем их снова */
+                var unreadCounter = ocWidget.storage.local.get('unreadMessages');
+                if (ocWidget.bar.is.opened && unreadCounter) ocWidget.bar.unreadCounter.add(+unreadCounter);
+
+                ocWidget.chat.auth.firstMessage = '';
+            }
+
+        },
+
+        message_read: function (data) {
+            // if (ocWidget.options.behaviour.debug)
+            // console.log(data, 'message_read');
+        },
+
+        state: function (data) {
+
+            // if (ocWidget.options.settings.online) return;
+
+            if (data.available_operator == 1) {
+
+                if (!ocWidget.render.is.rendered){
+                    ocWidget.render.start();
+                } else {
+                    if (ocWidget.storage.local.get('chat_state') == 'opened') {
+                        ocWidget.chat.init(true);
+                    } else {
+                        ocWidget.bar.init();
+                    }
+                }
+
+
+                if (ocWidget.options.settings.browser === 'msie')
+                    ocWidget.chat.msg.textarea.resize();
+
+                ocWidget.options.settings.available_operator = ocWidget.options.settings.online = true;
+
+                if(ocWidget.options.behaviour.prechats.secondary.length 
+                    && ocWidget.options.behaviour.prechats.isEnabled
+                    && ocWidget.storage.local.get('ocWidget_client-info')
+                    && ocWidget.chat.auth.prechats.activeScreen != 'primary') {
+                        ocWidget.chat.auth.show('secondary');
+                }
+
+                ocWidget.chat.offline.hide();
+                ocWidget.chat.alert.reset();
+
+            } else {
+
+                if (ocWidget.options.settings.browser === 'msie')
+                    ocWidget.chat.msg.textarea.resize();
+
+                ocWidget.options.settings.available_operator = ocWidget.options.settings.online = false;
+
+                if(ocWidget.chat.auth.prechats.activeScreen && Object.keys(ocWidget.chat.auth.prechats.savedPrechatFieldsData).length){
+                    // для результата проверки по группе
+                    if(data.chat_slot_available === 'false') {
+                        var activeSkill = ocWidget.chat.auth.prechats.getActiveSkill(ocWidget.chat.auth.prechats.savedPrechatFieldsData);
+                        ocWidget.chat.offline.showWithPrechat(activeSkill);
+                    } else { // если вообще никого нет онлайн
+                        var selects = RTC("#ocWidget-auth-skillId");
+                        selects[0].value = selects[1].value = '';
+                        RTC(ocWidget.el.widget).removeClass('ocWidget-offline-with-prechat');
+                        ocWidget.chat.offline.show(true);
+                    }
+
+                } else if (ocWidget.chat.msg.is.active) {
+                    ocWidget.chat.offline.show(true);
+                } else {
+                    ocWidget.chat.offline.show();
+                }
+            }
+        },
+
+        pong: function () {
+            ocWidget.websocket.ping.count = 0;
+        }
+
+    },
+
+    /**
+     * ТУТ СОДЕРЖАТСЯ ВСЕ КОДЫ WS ОШИБОК
+     * @namespace ocWidget.websocket.errors
+     * @type {Object}
+     */
+    errors: {
+
+        /**
+         * Отрисовка HTML сообщения в DOM
+         * @param  {number} code - код ошибки
+         * @param  {string} text - текст сообщения
+         * @return {node} - DOM элемент
+         */
+        message: function (code, text) {
+
+            var message = RTC().create('div', {
+                className: 'ocWidget__message ocAnimation-fadeIn',
+                innerHTML: ocWidget.tpls.systemMessage({
+                    text: 'ошибка код ' + code + ': ' + text,
+                    date: ocWidget.tools.date(undefined, 'error')
+                })
+            });
+
+            return message;
+
+        },
+        /**
+         * Код: 'Нехватка параметров'
+         * @param  {object} data Объект ошибки
+         * @return {void}
+         */
+        100: function (data) {
+
+            var text = 'Нехватка параметров';
+
+            var message = this.message(100, data[100]);
+
+            ocWidget.chat.msg.el.dialog.appendChild(message);
+
+            ocWidget.tools.scrollToBottom();
+        },
+        /**
+         * Код: 'Сервер БО не предоставил данных о пользователе'
+         * @param  {object} data Объект ошибки
+         * @return {void}
+         */
+        103: function (data) {
+
+            var text = 'Сервер БО не предоставил данных о пользователе';
+
+            var message = this.message(103, data[103]);
+
+            ocWidget.chat.msg.el.dialog.appendChild(message);
+
+            ocWidget.tools.scrollToBottom();
+        },
+        /**
+         * Код: 'Токен ВО недействителен'
+         * @param  {object} data Объект ошибки
+         * @return {void}
+         */
+        105: function (data) {
+
+            var text = 'Токен ВО недействителен';
+
+            var message = this.message(105, data[105]);
+
+            ocWidget.chat.msg.el.dialog.appendChild(message);
+
+            ocWidget.tools.scrollToBottom();
+        },
+        /**
+         * Код: 'Запрос содержит недопустимые символы'
+         * @param  {object} data Объект ошибки
+         * @return {void}
+         */
+        110: function (data) {
+
+            var text = 'Запрос содержит недопустимые символы';
+
+            var message = this.message(110, data[110]);
+
+            ocWidget.chat.msg.el.dialog.appendChild(message);
+
+            ocWidget.tools.scrollToBottom();
+        },
+        /**
+         * Код: 'Одно или несколько полей запроса превысило максимальную длинну'
+         * @param  {object} data Объект ошибки
+         * @return {void}
+         */
+        113: function (data) {
+
+            var text = 'Одно или несколько полей запроса превысило максимальную длинну';
+
+            var message = this.message(113, data[113]);
+
+            ocWidget.chat.msg.el.dialog.appendChild(message);
+
+            ocWidget.tools.scrollToBottom();
+        },
+        /**
+         * Код: 'Сервис недоступен'
+         * @param  {object} data Объект ошибки
+         * @return {void}
+         */
+        503: function (data) {
+            ocWidget.chat.destroy();
+            //return;
+
+            var self = this;
+
+            var uuid = data.uuid;
+
+            if (uuid) { // todo: доделать когда будет описан uuid в документации
+                for (var method in ocWidget.methods) {
+
+                    if(ocWidget.methods.hasOwnProperty(method)) {
+                        if (ocWidget.methods[method].uuid === uuid) {
+
+                            if (self.attempt[method] === 3) {
+    
+                                var message = this.message(503 + 'Сервис недоступен');
+    
+                                ocWidget.chat.msg.el.dialog.appendChild(message);
+    
+                                ocWidget.tools.scrollToBottom();
+    
+                                ocWidget.chat.alert.set('Уупс! <br> Что-то пошло не так, пожалуйста, перезагрузите страницу.').show();
+                                ocWidget.chat.offline.block();
+    
+                                ocWidget.chat.loading.hide();
+    
+                            } else {
+                                self.attempt[method] > 0 ? self.attempt[method]++ : self.attempt[method] = 1;
+    
+                                setTimeout(function () {
+                                    ocWidget.websocket.send(ocWidget.methods[method].request);
+                                }, 10000);
+    
+                            }
+                        }
+                    }
+
+                }
+            } else {
+                ocWidget.chat.alert.set(data[503]).show();
+                ocWidget.chat.offline.show();
+            }
+
+        },
+        /**
+         * Код: 'неизвестная ошибка'
+         * @param  {object} data Объект ошибки
+         * @return {void}
+         */
+        999: function (data) {
+
+            var self = this;
+
+            var text = 'неизвестная ошибка';
+
+            var uuid = data.errors.uuid;
+
+            for (var method in ocWidget.methods) {
+
+                if(ocWidget.methods.hasOwnProperty(method)) {
+                    if (ocWidget.methods[method].uuid === uuid) {
+
+                        if (self.attempt[method] === 3) {
+    
+                            var message = this.message(503);
+    
+                            ocWidget.chat.msg.el.dialog.appendChild(message);
+                            ocWidget.chat.offline.block();
+    
+                            ocWidget.tools.scrollToBottom();
+    
+                            return;
+                        }
+    
+                        self.attempt[method] >= 0 ? self.attempt[method]++ : self.attempt[method] = 0;
+    
+                        ocWidget.websocket.send(ocWidget.methods[method].request);
+    
+                    }
+                }
+
+            }
+        },
+
+        /**
+         * Коллекция содержащая количество попыток повтора запросов
+         * @type {Object}
+         */
+        attempt: {},
+
+    },
+
+    /**
+     * Логика PING PONG
+     * @namespace ocWidget.websocket.ping
+     * @type {Object}
+     */
+    ping: {
+
+        count: 0,
+
+        handler: undefined,
+
+        /**
+         * Инициализация PING
+         * @return {void}
+         */
+        init: function () {
+            ocWidget.websocket.ping.handler = setInterval(function () {
+
+                ocWidget.websocket.ping.count++;
+
+                if (ocWidget.websocket.ping.count > 3) {
+
+                    ocWidget.websocket.listen.close();
+                    ocWidget.websocket.ping.count = 0;
+
+                } else if (ocWidget.websocket.listen.readyState === 1)
+                    ocWidget.websocket.listen.send(JSON.stringify({action: 'ping'}));
+
+            }, 10000);
+
+        },
+
+        /**
+         * Отключение PING
+         * @return {void}
+         */
+        destroy: function () {
+            clearInterval(ocWidget.websocket.ping.handler);
+        }
+
+    }
+
+};

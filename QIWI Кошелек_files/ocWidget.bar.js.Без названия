@@ -1,0 +1,444 @@
+/**
+ * @file ЛОГИКА BAR | ПАНЕЛЬ | СВЕРНУТЫЙ ВИДЖЕТ - СОДЕРЖИТ ВСЕ МЕТОДЫ РАБОТЫ С БАРом
+ */
+
+/**
+ * МЕТОДЫ БАРа
+ * @namespace
+ * @type {Object}
+ */
+ocWidget.bar = {
+
+    is: {
+        opened: false,
+        rendered: false,
+        hasUnreadMsgs: false
+    },
+
+    intervalVar: null,
+    /**
+     * анимация иконок на баре. Есть еще css анимация.
+     */
+    animateBarIcons: function () {
+        var self = this,
+            count = self.el.icons.length - 1;
+
+        if (this.intervalVar) {
+            clearInterval(this.intervalVar);
+            for (var i; i < self.el.icons.length; i++) {
+                self.el.icons[i].style.opacity = '0';
+                self.el.icons[i].style.transform = 'scale(0)';
+                self.el.icons[i].style.display = 'none';
+            }
+        }
+
+        this.intervalVar = setInterval(function () {
+            if (ocWidget.bar.is.opened) {
+                self.el.icons[count].style.opacity = '0';
+                self.el.icons[count].style.transform = 'scale(0)';
+                if (count === self.el.icons.length - 1) count = 0;
+                else count++;
+                self.el.icons[count].style.opacity = '1';
+                self.el.icons[count].style.transform = 'scale(1)';
+            }
+        }, 2000);
+    },
+    /**
+     * Хранит в себе закэшированные в ocWidget.bar.cacheElements DOM элементы - ocWidget.bar.el[элемент]
+     * @type {Object}
+     */
+    el: {},
+
+    /**
+     * Хранит в себе настройки БАРа
+     * @type {Object}
+     */
+    options: {},
+
+    /**
+     * Инициализация
+     * @return {void}
+     */
+    init: function () {
+        if (!ocWidget.bar.is.rendered) {
+            ocWidget.bar.render();
+        }
+    },
+
+    /**
+     * Отрисовка <div class="ocWidget__bar"/> в DOM
+     * @return {void}
+     */
+    render: function () {
+        var self = this;
+        if (ocWidget.bar.is.rendered) {
+            this.show();
+            return;
+        }
+        ocWidget.bar.is.rendered = true;
+        ocWidget.bar.is.opened = true;
+        ocWidget.el.bar = RTC().create('div', {
+            className: 'ocWidget__bar-wrapper',
+            innerHTML: ocWidget.tpls.ocWidget__bar()
+        });
+        ocWidget.tpls.insertInToDom(ocWidget.el.widget, ocWidget.el.bar);
+        setTimeout(function () {
+            self.cacheElements();
+        })
+    },
+
+    /**
+     * Удаление <div class="ocWidget__bar"/> из DOM
+     * @return {void}
+     */
+    destroy: function () {
+
+        ocWidget.bar.is.rendered = false;
+        ocWidget.bar.is.opened = false;
+
+        ocWidget.el.widget.removeChild(ocWidget.el.bar);
+    },
+
+    /**
+     * Показать БАР
+     * @return {void}
+     */
+    show: function () {
+        ocWidget.bar.is.opened = true;
+        RTC(ocWidget.el.bar).removeClass('ocWidget-bar-hide');
+    },
+
+    /**
+     * Скрыть БАР
+     * @return {void}
+     */
+    hide: function () {
+        ocWidget.bar.is.opened = false;
+        if (this.unreadCounter.is.visible) this.unreadCounter.remove();
+        RTC(ocWidget.el.bar).addClass('ocWidget-bar-hide');
+        ocWidget.bar.message.clear();
+    },
+
+    /**
+     * Логика отрисовки входящих сообщений при круглом скрытом виджете
+     * @namespace
+     * @type {Object}
+     */
+    message: {
+
+        count: 0,
+
+        messages: [],
+
+        /**
+         * Логика таймера - отображающего сообщение "приветствие"
+         * @namespace
+         * @type {Object}
+         */
+        trigger: {
+
+            isEnable: false,
+
+            // Дефолтное или полученное из АРМ сообщение "приветствие"
+            message: ocWidget.options.behaviour.bar.triggerMessage,
+
+            /**
+             * Проверка на отображение триггерных сообщений
+             * - отображались ли триггерные сообщения
+             * - вкл/выкл функционал триггерных сообщений
+             * - проверка наличия текста сообщения в настройке
+             * - в наличии настройка времени отображения сообщения
+             * @return {boolean} результат проверки
+             */
+            check: function () {
+                if (ocWidget.storage.local.get('barTimerDone') ||
+                    ocWidget.options.behaviour.bar.triggerMessage.isEnabled !== 1 ||
+                    typeof this.message.text !== 'string' || !this.message.text.length ||
+                    typeof ocWidget.options.behaviour.bar.triggerMessage.delay !== 'number') {
+                    return false;
+                }
+                return this.isEnable = true;
+            },
+
+            /**
+             * Вызов таймера при загрузке страницы
+             * @return {void}
+             */
+            init: function () {
+                var self = this;
+                if (!self.message.isEnabled) return;
+                // секунды => миллисекунды
+                self.message.delay = self.message.delay * 1000;
+                if (ocWidget.storage.local.get('TimerTime')) {
+                    self.message.delay -= new Date() - ocWidget.storage.local.get('TimerTime');
+                } else {
+                    ocWidget.storage.local.set('TimerTime', Date.now());
+                }
+                self.tryIteration();
+            },
+
+            /**
+             * Запуск setTimeout
+             * при срабатывании таймера отобразить сообщение если:
+             * - есть соединение с сервером вебчата
+             * - в storage есть запись TimerTime (отсутствует если таймер не запускался или уже был открыт чат)
+             * - еще не было отрисовано ни одного сообщения
+             * @return {void}
+             */
+            tryIteration: function () {
+                var self = this;
+                self.timer = setTimeout(function () {
+                    // Если нет соединения с сервером --> снова запустить таймер
+                    var WSConnected = ocWidget.websocket.isConnected;
+                    if (typeof WSConnected === 'boolean' &&
+                        WSConnected === true &&
+                        ocWidget.storage.local.get('TimerTime') &&
+                        !RTC('.ocWidget__bar__trigger__messages-message').element.length) {
+                        self.go(true);
+                    }
+                }, self.message.delay);
+            },
+
+            destroyTimer: function () {
+                clearTimeout(this.timer);
+                ocWidget.storage.local.set('barTimerDone', true);
+                ocWidget.storage.local.remove('TimerTime');
+            },
+
+            /**
+             * Отрисовка, сохранение состояния
+             * @param  {boolean} clear - очистить ли таймер (cleatTimeout)
+             * @return {void}
+             */
+            go: function (clear) {
+                var self = this,
+                    mess = {
+                        type: 1,
+                        text: self.message.text
+                    };
+                ocWidget.bar.message.render(mess, 0);
+                ocWidget.bar.message.messages.push(mess);
+                ocWidget.storage.local.set('unreadBarMessages', ocWidget.bar.message.messages);
+                ocWidget.storage.local.set('barTimerDone', true);
+                if (clear) clearTimeout(self.timer);
+            },
+        },
+
+        /**
+         * Логика отрисовки кнопок [Ответить] [Х]
+         * @namespace
+         * @type {Object}
+         */
+        buttons: {
+
+            done: false,
+
+            /**
+             * HTML кнопок
+             * @type {String}
+             */
+            els: '<div class="ocWidget__bar__trigger__messages__buttons-answer ocWidget-text" onclick="ocWidget.chat.init()">Ответить</div>\
+				<div class="ocWidget__bar__trigger__messages__buttons-close ocWidget-text" onclick="ocWidget.bar.message.clear()">&#10006;</div>',
+
+            /**
+             * Отрисовка кнопок
+             * @return {void}
+             */
+            render: function () {
+                if (this.done) return;
+                var buttons = RTC().create('div', {
+                    className: 'ocWidget__bar__trigger__messages__buttons',
+                    innerHTML: this.els
+                });
+                ocWidget.tpls.insertInToDom(ocWidget.bar.el.dialog, buttons);
+                this.done = true;
+            }
+
+        },
+
+        /**
+         * Отрисовка сообщений над круглым виджетом
+         * @param  {object} mess  - объект сообщения
+         * @param  {boolean} timer - сообщение из таймера или входящее сообщение
+         * @return {void}
+         */
+        render: function (mess, timer) {
+            if (mess.type === 1 && ocWidget.bar.el.dialog && ocWidget.bar.message.count < 5) {
+                ocWidget.bar.message.buttons.render();
+                text = ocWidget.tools.textIntoHtml(mess.text);
+                message = RTC().create('div', {
+                    className: 'ocWidget__bar__trigger__messages-message ocAnimation-fadeIn',
+                    innerHTML: ocWidget.tpls.barMessage({
+                        text: text
+                    })
+                });
+                ocWidget.tpls.insertInToDom(ocWidget.bar.el.dialog, message);
+                if (typeof timer !== 'number') {
+                    ocWidget.bar.message.messages.push(mess);
+                    ocWidget.storage.local.set('unreadBarMessages', ocWidget.bar.message.messages);
+                }
+                ocWidget.bar.message.count++;
+            }
+        },
+
+        /**
+         * Очистка элемента с сообщениями
+         * @return {void}
+         */
+        clear: function () {
+            ocWidget.storage.local.remove('unreadBarMessages');
+            if (ocWidget.bar.el && ocWidget.bar.el.dialog) ocWidget.bar.el.dialog.innerHTML = '';
+            ocWidget.bar.message.buttons.done = false;
+            ocWidget.bar.message.count = 0;
+        }
+    },
+
+    /**
+     * Логика отрисовки непрочитанных сообщений
+     * @namespace
+     * @type {Object}
+     */
+    unreadCounter: {
+
+        is: {
+            visible: false,
+        },
+
+        counter: 0,
+
+        /**
+         * Добавляет непрочитанное сообщение
+         * @param {num} count - количество непрочитанных
+         * @return {void}
+         */
+        add: function (count) {
+
+            if (!ocWidget.bar.is.opened && !ocWidget.chat.menu.active) return;
+            this.counter = count || this.counter + 1;
+
+            ocWidget.storage.local.set('unreadMessages', this.counter);
+
+            ocWidget.bar.el.unreadMessages.innerHTML = this.counter;
+            RTC('.ocWidget__chat__top-unreadMessages').innerHTML = this.counter;
+
+            if (!this.is.visible) {
+                this.show();
+            }
+        },
+
+        /**
+         * Делает непрочитанное сообщение прочитанным и вызывает hide()
+         * @return {void}
+         */
+        remove: function () {
+
+            this.counter = 0;
+
+            ocWidget.storage.local.remove('unreadMessages');
+
+            ocWidget.bar.message.count = 0;
+
+            ocWidget.bar.el.unreadMessages.innerHTML = this.counter;
+            RTC('.ocWidget__chat__top-unreadMessages').innerHTML = this.counter;
+
+            this.hide();
+
+            if (!ocWidget.chat.msg.message.lastMessage || ocWidget.bar.is.opened) return;
+
+            ocWidget.websocket.send({
+                action: 'message_read',
+                data: {
+                    id: +ocWidget.chat.msg.message.lastMessage
+                }
+            });
+
+        },
+
+        /**
+         * Показать непрочитанные сообщения
+         * @return {void}
+         */
+        show: function () {
+
+            this.is.visible = true;
+            RTC(ocWidget.el.widget).addClass('ocWidget-unread-messages');
+
+        },
+
+        /**
+         * Скрыть непрочитанные сообщения
+         * @return {void}
+         */
+        hide: function () {
+
+            this.is.visible = false;
+            RTC(ocWidget.el.widget).removeClass('ocWidget-unread-messages');
+
+        },
+
+        /**
+         * Подписка на получение непрочитанных сообщений. Сделано и используется на ВТБ.
+         * @return {void}
+         */
+        request: function () {
+            var uuid = ocWidget.methods.subscribe_unread_counter_update.uuid = ocWidget.tools.randomStr(10);
+
+            var data = ocWidget.methods.subscribe_unread_counter_update.request = {
+                action: 'subscribe_unread_counter_update',
+                uuid: uuid
+            };
+
+            if (ocWidget.options.auth.login) data.external_id = ocWidget.options.auth.login;
+
+            if (data.external_id) ocWidget.websocket.send(data);
+        },
+
+        response: function (data) {
+            // console.log(data);
+        }
+    },
+
+    /**
+     * Закэшировать элементы в объекте ocWidget.bar.el
+     * @return {void}
+     */
+    cacheElements: function () {
+        this.el.unreadMessages = ocWidget.options.behaviour.bar.panelType === 'square' ? RTC('.ocWidget__bar--outerPanel-unreadMessages') : RTC('.ocWidget__bar__round__chat-unreadMessages');
+        this.el.dialog = RTC('.ocWidget__bar__trigger__messages') ? RTC('.ocWidget__bar__trigger__messages') : '';
+        this.el.outerPanel = ocWidget.options.behaviour.bar.panelType === 'square' ? RTC('.ocWidget__bar--outerPanel') : '';
+        this.el.innerPanel = ocWidget.options.behaviour.bar.panelType === 'square' ? RTC('.ocWidget__bar--innerPanel') : '';
+        this.el.icons = this.el.outerPanel ? this.el.outerPanel.getElementsByClassName('oc-ico') :
+            ocWidget.el.bar.getElementsByClassName('ocWidget__bar__round__channels__channel_for_animation').length ?
+            ocWidget.el.bar.getElementsByClassName('ocWidget__bar__round__channels__channel_for_animation') :
+            ocWidget.el.bar.getElementsByClassName('ocWidget__bar__round__channels__channel');
+        this.el.icons = Array.prototype.slice.call(this.el.icons);
+        this.handlers();
+    },
+
+    /**
+     * Запустить обработчики
+     * - непрочитанные сообщения 
+     * - анимация иконок/каналов
+     * - триггерные сообщения
+     * @return {void}
+     */
+    handlers: function () {
+        if (ocWidget.storage.local.get('unreadMessages')) {
+            ocWidget.bar.unreadCounter.add(+ocWidget.storage.local.get('unreadMessages'));
+        }
+        if (ocWidget.storage.local.get('unreadBarMessages')) {
+            ocWidget.storage.local.get('unreadBarMessages').forEach(ocWidget.bar.message.render);
+        }
+        if (ocWidget.options.behaviour.bar.panelType === 'round' &&
+            RTC('.ocWidget__bar__round__chat') &&
+            ocWidget.options.behaviour.bar.animation.isEnabled) {
+            this.el.icons.push(RTC('.ocWidget__bar__round__chat'));
+        }
+        if (this.message.trigger.check()) {
+            this.message.trigger.init()
+        }
+        if (this.el.icons.length > 1) {
+            this.animateBarIcons();
+        }
+    }
+};

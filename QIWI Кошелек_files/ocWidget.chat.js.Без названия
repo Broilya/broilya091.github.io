@@ -1,0 +1,3535 @@
+/**
+ * @file ЛОГИКА ЧАТА - СОДЕРЖИТ ОСНОВНУЮ ЛОГИКУ РАБОТЫ С ВИДЖЕТОМ
+ */
+
+/**
+ * МЕТОДЫ ВИДЖЕТА
+ * @namespace
+ * @type {Object}
+ */
+ocWidget.chat = {
+
+    is: {
+        rendered: false,
+        currentPage: 'msg',
+        active: function() {  // активно ли сейчас окно msg в чате
+            return RTC(ocWidget.el.widget).hasClass('ocWidget-msg');
+        }
+    },
+
+    options: {},
+
+    block: false,
+
+    /**
+     * Метод
+     * (инициализации - вызывается при загрузке страницы)
+     * или
+     * (открытия виджета + авторизации - если кликнули на БАР)
+     * @param  {boolean} first - если метод вызывается не по клику на БАР
+     * @return {void}
+     */
+    init: function (first) {
+        if (ocWidget.options.behaviour.mobile) {
+            ocWidget.chat.mobileVersion.on();
+        }
+
+        // Если запущен таймер триггерных сообщений выключаем его
+        if (ocWidget.storage.local.get('TimerTime')) {
+            ocWidget.bar.message.trigger.destroyTimer();
+        }
+
+        // Состояние чата до перезагрузки F5
+        var wasOpened = ocWidget.storage.local.get('chat_state') === 'opened' ? true : false;
+
+        // Если это первый клик по бару в мобильном браузере и не стоит настройка onlyChat - блокируем отрытие и срабатывает только hover
+        if (ocWidget.options.behaviour.mobile && this.block && !wasOpened && !ocWidget.options.behaviour.onlyChat) {
+            this.block = false;
+        }
+
+        // Если это второй клик по бару в моб. браузере или 2+ не в моб. браузере - открываем виджет
+        else {
+
+            // Если AUTH не выполнен && ИНИТ выполен - выполнить запрос авторизации
+            if (!ocWidget.auth.isDone && ocWidget.init.isDone) {
+                ocWidget.chat.auth.init();
+            }
+
+            if (!ocWidget.chat.is.opened && !ocWidget.chat.auth.inProgress && !ocWidget.storage.local.get('client-info')) {
+                ocWidget.auth.check_chat_slot_available(ocWidget.chat.auth.prechats.savedPrechatFieldsData);
+            }
+
+            // Если INIT не выполнен ? выполнить инит : показать виджет
+            !ocWidget.init.isDone ? ocWidget.init.start('YES') : ocWidget.chat.show(first);
+        }
+
+    },
+    /**
+     * Объект с методами и свойствами, отвечающими за
+     * управление отображением каналов в панеле бара,
+     * экране оффлайна и меню.
+     */
+    channels: {
+        skillGroupId: 0,
+        prechatName: '',
+        channels: [],
+        channelURLs: [],
+        /**
+         * @function init
+         * @description Проверяет, были ли на странице пречаты и
+         * устанавливает ряд переменных для дальнейшего использования.
+         * @returns {void} ничего не возвращает.
+         */
+        init: function() {
+            var selects = document.querySelectorAll('#ocWidget-auth-skillId');
+
+            if(selects.length) {
+                this.prechatName = this.getSkillGroupsPrechatFieldName(selects);
+                this.skillGroupId = this.getSkillGroupId(selects);
+                this.channels = this.getChannelsIds(this.skillGroupId, this.prechatName);
+                this.channelURLs = this.getChannelsURLs(this.channels);
+            }
+        },
+        /**
+         * @function getSkillGroupsPrechatFieldName
+         * @description .
+         * @param {NodeList} selects - список полей выбора скилл-группы.
+         *  Их 2 с одним и тем же id - такова особенность архитектуры.
+         * @returns {string} имя поля выбора скилл-групп.
+         */
+        getSkillGroupsPrechatFieldName: function(selects) {
+            return selects[0].name || selects[1].name;
+        },
+        /**
+         * @function getSkillGroupId
+         * @description получает id выбранной скилл-группы.
+         * @param {NodeList} selects - список полей выбора скилл-группы.
+         *  Их 2 с одним и тем же id - такова особенность архитектуры.
+         * @returns {number} id выбранной скилл-группы. Если нет - 0.
+         */
+        getSkillGroupId: function(selects) {
+            return +selects[0].options[selects[0].selectedIndex].value || +selects[1].options[selects[1].selectedIndex].value;
+        },
+        /**
+         * @function getChannelsIds
+         * @description получает массив id каналов.
+         * @returns {array} массив id каналов.
+         */
+        getChannelsIds: function() {
+            if(this.skillGroupId && this.prechatName) {
+                var skillGroups = ocWidget.options.behaviour.prechats.list[this.prechatName].values;
+                for(var i = 0; i < skillGroups.length; i++) {
+                    if(skillGroups[i].id === this.skillGroupId) {
+                        return skillGroups[i].channels;
+                    }
+                }
+            }
+            return [];
+        },
+        /**
+         * @function getChannelsURLs
+         * @description получает массив урлов каналов.
+         * @returns {array} массив урлов каналов.
+         */
+        getChannelsURLs: function() {
+            var channelURLs = [];
+            if(ocWidget.options.channels.list && ocWidget.options.channels.list.length && this.channels.length) {
+                for(var i = 0; i < ocWidget.options.channels.list.length; i++) {
+                    for(var j = 0; j < this.channels.length; j++) {
+                        if(this.channels[j] == ocWidget.options.channels.list[i].id) {
+                            channelURLs.push(ocWidget.options.channels.list[i].external_id);
+                        }
+                    }
+                }
+            }
+            return channelURLs;
+        },
+        /**
+         * @function setChannelsForMenu
+         * @description меняет список каналов для группы в экране "меню"
+         * в соответствии с выбором юзера.
+         * @returns {void} ничего не возвращает.
+         */
+        setChannelsForMenu: function() {
+            var linksList = document.querySelectorAll('#ocWidget .ocWidget__chat__mid__menu--block-wrapper a');
+
+            if(linksList && linksList.length) {
+                linksList = Array.prototype.slice.call(linksList, 0);
+                linksList.pop();
+                for(var i = 0; i < linksList.length; i++) {
+                    if(!this.skillGroupId) linksList[i].style.display = 'block'; else
+                        linksList[i].style.display = 'none';
+                    for(var j = 0; j < this.channelURLs.length; j++) {
+                        if(~linksList[i].href.indexOf(this.channelURLs[j])) {
+                            linksList[i].style.display = 'block';
+                            break;
+                        }
+                    }
+                }
+            }
+        },
+        /**
+         * @function setChannelsForBar
+         * @description меняет список каналов для группы в панеле иконок
+         * в соответствии с выбором юзера. Много условий из-за разной
+         * верстки для разных настроек виджета.
+         * @returns {void} ничего не возвращает.
+         */
+        setChannelsForBar: function() {
+            var barLinksList = document.querySelectorAll('#ocWidget .ocWidget__bar--innerPanel a').length ?
+            document.querySelectorAll('#ocWidget .ocWidget__bar--innerPanel a') :
+            document.querySelectorAll('#ocWidget .ocWidget__bar__round__channels .ocWidget__bar__round__channels__channel'),
+                barIconsCounter = 0;
+
+            if(barLinksList && barLinksList.length) {
+                barLinksList = Array.prototype.slice.call(barLinksList, 0);
+                for(var i = 0; i < barLinksList.length; i++) {
+                    if(!this.skillGroupId) {
+                        barLinksList[i].style.display = 'block';
+                        barIconsCounter = barLinksList.length;
+                        if(ocWidget.options.behaviour.bar.panelType === 'round') {
+                            barLinksList[i].className = 'ocWidget__bar__round__channels__channel';
+                        }
+                    } else {
+                        barLinksList[i].style.display = 'none';
+                        if(ocWidget.options.behaviour.bar.panelType === 'round') {
+                            barLinksList[i].className = 'ocWidget__bar__round__channels__channel';
+                        }
+                    }
+                    for(var j = 0; j < this.channelURLs.length; j++) {
+                        if(barLinksList[i].href && ~barLinksList[i].href.indexOf(this.channelURLs[j])) {
+                            barLinksList[i].style.display = 'block';
+                            barIconsCounter++;
+                            break;
+                        }
+                        if(~barLinksList[i].innerHTML.indexOf(this.channelURLs[j])) {
+                            barLinksList[i].style.display = 'block';
+                            barIconsCounter++;
+                            barLinksList[i].className = 'ocWidget__bar__round__channels__channel ocWidget__bar__round__channels__channel_for_animation  ocWidget__bar__round__channels__channel_for_animation-' + barIconsCounter;
+                            break;
+                        }
+                    }
+                }
+            }
+            if(ocWidget.options.behaviour.bar.panelType === 'square') {
+                var barInnerPanel = document.querySelector('#ocWidget .ocWidget__bar-wrapper').firstElementChild;
+                barInnerPanel.classList.remove(barInnerPanel.classList[barInnerPanel.classList.length - 1]);
+                barInnerPanel.classList.add('ocWidget__bar-channels-' + barIconsCounter);
+            }
+        }
+    },
+    /**
+     * МЕТОД - отрисовка <div class="ocWidget__chat"/> в DOM
+     * @return {void}
+     */
+    render: function () {
+
+        if (this.is.rendered) {
+            this.show();
+        } else {
+            this.is.rendered = true;
+            RTC(ocWidget.el.widget).addClass('ocWidget-' + ocWidget.chat.is.currentPage);
+
+            // ОБЕРТКА ЧАТА
+            ocWidget.el.chat = RTC().create('div', {
+                className: 'ocWidget__chat'
+            });
+
+            // ВЕРХНЯЯ ЧАСТЬ ЧАТА  - [МЕНЮ --КОМПАНИЯ-- Х]
+            ocWidget.el.chat_top = RTC().create('div', {
+                className: 'ocWidget__chat__top-wrapper',
+                innerHTML: ocWidget.tpls.ocWidget__chat__top()
+            });
+
+            // СРЕДНЯЯ ЧАСТЬ ЧАТА - где все экраны и сообщения
+            ocWidget.el.chat_mid = RTC().create('div', {
+                className: 'ocWidget__chat__mid-wrapper',
+                innerHTML: ocWidget.tpls.ocWidget__chat__mid()
+            });
+
+            // НИЖНЯЯ ЧАСТЬ ЧАТА - где textarea
+            ocWidget.el.chat_bot = RTC().create('div', {
+                className: 'ocWidget__chat__bot-wrapper',
+                innerHTML: ocWidget.tpls.ocWidget__chat__bot()
+            });
+
+            // Собираем все части
+            ocWidget.el.chat.appendChild(ocWidget.el.chat_top);
+            ocWidget.el.chat.appendChild(ocWidget.el.chat_mid);
+            ocWidget.el.chat.appendChild(ocWidget.el.chat_bot);
+
+            // Вставляем в DOM
+            //ocWidget.tpls.insertInToDom(ocWidget.el.widget, ocWidget.el.chat);
+            ocWidget.el.widget.appendChild(ocWidget.el.chat);
+
+            // Находим все элементы чата
+            this.alert.cacheElements();
+            this.msg.cacheElements();
+            this.csi.cacheElements();
+            this.offline.cacheElements();
+
+            // Отрисовываем код сессии в МЕНЮ
+            RTC('#ocWidget-sessionCode').innerHTML = ocWidget.storage.local.get('sessionCode');
+
+            // Включаем dragNdrop на десктопах
+            if (!ocWidget.options.behaviour.mobile)
+                ocWidget.dragndrop.init(ocWidget.el.chat_top, ocWidget.el.chat);
+
+            // Отрисовываем сохраненную позицию виджета при F5
+            if (ocWidget.storage.local.get('chat_position')) {
+                var position = {
+                    clientX: ocWidget.storage.local.get('chat_position').X,
+                    clientY: ocWidget.storage.local.get('chat_position').Y
+                };
+                if (!ocWidget.options.behaviour.mobile)
+                    ocWidget.dragndrop.move(position);
+            }
+
+            // Отрисовываем сохраненное состояние виджета открыт/закрыт при F5
+            if (ocWidget.storage.local.get('chat_state') === 'opened') this.init('first');
+            else this.hide('first');
+        }
+
+    },
+
+    /**
+     * ПЕРЕЗАГРУЗКА ВИДЖЕТА
+     * @return {void}
+     */
+    destroy: function () {
+        if (ocWidget.options.behaviour.debug) {
+            console.log('ocWidget: closing session..');
+        }
+
+        // Если виджет уже не нужно показывать - скрываем ЧАТ и БАР
+        var isChatDestroyed = ocWidget.storage.local.get('chat_destroyed');
+        if (ocWidget.getSettings.doNotDisplay() || isChatDestroyed === 'true') {
+            ocWidget.chat.hide();
+            ocWidget.bar.hide();
+        } else {
+            // Сбрасываем все состояния
+            ocWidget.chat.alert.hide();
+            ocWidget.chat.csi.hide();
+            ocWidget.chat.msg.textarea.reset();
+            ocWidget.chat.is.opened = false;
+            ocWidget.bar.is.opened = false;
+            ocWidget.chat.is.currentPage = 'msg';
+            ocWidget.init.isDone = false;
+            ocWidget.auth.isDone = false;
+            ocWidget.chat.msg.pagination.turnOff();
+            ocWidget.chat.msg.message.render.operators = [];
+            ocWidget.chat.msg.el.dialog.innerHTML = '';
+            // destroy после csi ?
+            if (ocWidget.chat.csi.rate) {
+                ocWidget.chat.csi.rate = 0;
+                // СНОВА ВЫПОЛНЯЕМ INIT
+                ocWidget.init.start();
+            } else {
+                // СНОВА ВЫПОЛНЯЕМ INIT И ПЕРЕДАЕМ КОЛЛБЕК, КОТОРЫЙ ВЫЗОВЕТСЯ В WEBSOCKET.ONOPEN ( костылык:) )
+                if(!ocWidget.websocket.isInitializedByClient) {
+                    ocWidget.init.start(undefined, ocWidget.chat.auth.init);
+                }
+            }
+            // Если кобраузинг был включен - выключаем
+            if (window.ocCobrowsing && ocWidget.chat.msg.cobrowsing.is.active) {
+                window.ocCobrowsing.destroy();
+            }
+            // Включаем экран чата
+            ocWidget.chat.msg.show();
+            // Показываем загрузку, пока она не снимется в auth.success
+            ocWidget.chat.loading.show();
+        }
+    },
+
+    /**
+     * ОТКРЫТИЕ ВИДЖЕТА
+     * @param  {boolean} first - если это автоматическое открытие при F5
+     * @return {void}
+     */
+    show: function (first) {
+
+        ocWidget.chat.is.opened = true;
+
+        ocWidget.storage.local.set('chat_state', 'opened');
+
+        // АНИМАЦИЯ ПОЯВЛЕНИЯ НА ДЕСКТОПАХ
+        if (!first && !ocWidget.options.behaviour.mobile)
+            RTC(ocWidget.el.widget).addClass('ocAnimation-chatShow');
+        if (!ocWidget.options.behaviour.mobile)
+            RTC(ocWidget.el.widget).removeClass('ocAnimation-chatHide');
+
+        RTC(ocWidget.el.widget).removeClass('ocWidget-chat-hide');
+
+        // При открытии виджета скрываем БАР
+        ocWidget.bar.hide();
+
+        RTC(ocWidget.el.widget).removeClass('ocAnimation-shake');
+
+        ocWidget.chat.msg.textarea.resize();
+        ocWidget.chat.msg.textarea.reset();
+
+        // Если мобильная версия - заблокировать прокрутку body под виджетом.
+        if (ocWidget.options.behaviour.mobile)
+            document.body.style.overflow = "hidden";
+
+        // Не даём анимации сработать на мобильных
+        if (!first && !ocWidget.options.behaviour.mobile) {
+
+            var position = {
+                clientX: ocWidget.el.bar.children[0].getBoundingClientRect().left,
+                clientY: document.documentElement.clientHeight / 2 - ocWidget.el.bar.children[0].offsetHeight / 2 - 50
+            };
+
+            ocWidget.dragndrop.move(position);
+        } else if (ocWidget.options.behaviour.mobile) {
+
+            ocWidget.chat.mobileVersion.horizontalLock.init();
+
+            //анимация открытия чата в мобильной версии
+            RTC(ocWidget.el.widget).addClass('ocAnimation-chatShow-mobile');
+            RTC(ocWidget.el.widget).removeClass('ocAnimation-chatHide-mobile');
+        }
+
+    },
+
+    /**
+     * ЗАКРЫТИЕ ВИДЖЕТА
+     * @param  {boolean} first - если это автоматическое закрытие при F5
+     * @return {void}
+     */
+    hide: function (first) {
+
+        if (!ocWidget.chat.is.opened && first == undefined) {
+            return false;
+        }
+
+        ocWidget.chat.is.opened = false;
+
+        ocWidget.storage.local.set('chat_state', 'closed');
+
+        ocWidget.chat.channels.init();
+        ocWidget.chat.channels.setChannelsForBar();
+
+
+        if (!ocWidget.options.behaviour.mobile)
+            RTC(ocWidget.el.widget).removeClass('ocAnimation-chatShow');
+
+        RTC(ocWidget.el.widget).addClass('ocWidget-chat-hide');
+
+        // Если был открыт 1 из этих экранов - закрыть (меню, загрузка файла)
+
+        if (RTC(ocWidget.el.widget).hasClass('ocWidget-fileupload')) {
+            ocWidget.chat.msg.fileUpload.hide();
+        }
+
+        // Показываем БАР
+        if (ocWidget.storage.local.get('chat_destroyed') != 'true') {
+            ocWidget.bar.show();
+        }
+
+        // Если мобильная версия разблокировка прокрутки body
+        if (ocWidget.options.behaviour.mobile) {
+            document.body.style.overflow = "";
+            ocWidget.chat.mobileVersion.off();
+            ocWidget.chat.mobileVersion.horizontalLock.destroy();
+        }
+
+        if (first) {
+            return;
+        } else if (ocWidget.options.behaviour.mobile) {
+            // Анимация скрытия для мобильной версии
+            RTC(ocWidget.el.widget).removeClass('ocAnimation-chatShow-mobile');
+            RTC(ocWidget.el.widget).addClass('ocAnimation-chatHide-mobile');
+        } else {
+            // АНИМАЦИЯ СКРЫТИЯ
+            RTC(ocWidget.el.widget).addClass('ocAnimation-chatHide');
+
+            var position = {
+                clientX: ocWidget.el.bar.children[0].getBoundingClientRect().left,
+                clientY: document.documentElement.clientHeight / 2 - ocWidget.el.bar.children[0].offsetHeight / 2 - 50
+            };
+
+            if (ocWidget.options.behaviour.isBarShown) {
+                ocWidget.dragndrop.move(position);
+            }
+        }
+    },
+
+    /**
+     * Анимация shake виджета
+     * @return {void}
+     */
+    shake: function () {
+
+        ocWidget.chat.msg.el.fileUploadText.innerHTML =
+            ocWidget.chat.msg.el.fileUploadInput.value = ocWidget.chat.msg.el.dragndropInput.value = '';
+
+        RTC(ocWidget.el.widget).removeClass('ocAnimation-chatShow');
+
+        RTC(ocWidget.el.widget).removeClass('ocAnimation-shake');
+
+        setTimeout(function () {
+            RTC(ocWidget.el.widget).addClass('ocAnimation-shake');
+        }, 50);
+
+    },
+
+    /**
+     * Логика открытия / закрытия меню
+     * @namespace
+     * @type {Object}
+     */
+    menu: {
+
+        active: false,
+
+        /**
+         * Открыть меню
+         * @return {void}
+         */
+        show: function () {
+            RTC(ocWidget.el.widget).addClass('ocWidget-menu');
+            this.active = true;
+        },
+
+        /**
+         * Закрыть виджет
+         * @return {void}
+         */
+        hide: function () {
+            RTC(ocWidget.el.widget).removeClass('ocWidget-menu');
+            this.active = false;
+        },
+
+        /**
+         * Открыть/закрыть меню
+         * @return {void}
+         */
+        toggle: function () {
+
+            var self = this;
+
+            if (!RTC(ocWidget.el.widget).hasClass('ocWidget-menu')) {
+
+                ocWidget.chat.channels.init();
+                ocWidget.chat.channels.setChannelsForMenu();
+
+                self.show();
+                ocWidget.chat.msg.textarea.reset();
+
+            } else if (RTC(ocWidget.el.widget).hasClass('ocWidget-menu')) {
+
+                this.hide();
+
+                // Фиксим поведение textarea открытия/закрытия меню во время открытых экранов (загрузка файла, пречат поля, нас нет онлайн)
+                if (!RTC(ocWidget.el.widget).hasClass('ocWidget-fileupload') &&
+                    !RTC(ocWidget.el.widget).hasClass('ocWidget-auth') &&
+                    !RTC(ocWidget.el.widget).hasClass('ocWidget-offline'))
+                    ocWidget.chat.msg.textarea.resize();
+
+                // Фиксим поведение открытия/закрытия меню если в ресайз textarea введено максимальное количество символов
+                if (ocWidget.chat.msg.el.msgTextarea.scrollHeight >= 100) {
+                    ocWidget.chat.msg.textarea.maxResize();
+                    ocWidget.tools.scrollToBottom();
+                }
+
+            }
+
+            // В зависимости от количества доступных каналов меню выравнивается
+            self.resize();
+
+            ocWidget.bar.unreadCounter.remove();
+
+        },
+
+        resize: function () {
+            var height = RTC('.ocWidget__chat__mid__menu--block').children[0].offsetHeight;
+            RTC('.ocWidget__chat__mid__menu--block').style.height = height + 75 + 'px';
+        }
+
+    },
+
+    /**
+     * ЛОГИКА МОДАЛЬНОГО ОКНА
+     * @namespace
+     * @type {Object}
+     */
+    modal: {
+
+        current: '',
+
+        active: false,
+
+        /**
+         * Коллбек при window.onResize
+         * @return {void}
+         */
+        refresh: function () {
+            var content = RTC('.ocWidget-modal-content');
+
+            content.style.left = 'calc(50% - ' + content.offsetWidth / 2 + 'px)';
+            content.style.top = 'calc(50% - ' + content.offsetHeight / 2 + 'px)';
+
+        },
+
+        /**
+         * Закрытие модального окна на ESC
+         * @param  {event} event - Событие браузера
+         * @return {void}
+         */
+        close: function (event) {
+            var keyCode = 'which' in event ? event.which : event.keyCode;
+            if (keyCode === 27 && ocWidget.chat.modal.active) {
+                ocWidget.chat.modal.destroy();
+            }
+        },
+
+        /**
+         * Открыть модальное окно
+         * @param  {node} img - DOM элемент с аттрибутом data-modal="путь_до_картинки"
+         * @return {void}
+         */
+        init: function (img) {
+            this.active = true;
+
+            var self = this;
+
+            window.addEventListener('resize', self.refresh);
+            window.addEventListener('keyup', self.close);
+
+            var src = img.getAttribute('data-modal');
+
+            var data = {
+                src: src,
+                text: 'text'
+            };
+
+            this.show(data);
+        },
+
+         /**
+          * Закрыть модальное окно
+          * @param {object} [event] - событие клика
+          * @return {void}
+          */
+        destroy: function (event) {
+            /**
+             * var target будет или DOM элемент, если передается событие,
+             * или false если не передается
+             */
+            var target = event && (event.target || event.srcElement);
+            if(target && target.classList.contains('ocWidget-img')) {
+                return false;
+            }
+
+            this.active = false;
+
+            var self = this;
+
+            window.removeEventListener('resize', self.refresh);
+            window.removeEventListener('keyup', self.close);
+
+            this.hide();
+        },
+
+        /**
+         * Открыть модальное окно
+         * @param  {string} src - путь до картинки на fileStorage
+         * @return {void}
+         */
+        show: function (src) {
+
+            var self = this;
+
+            src = src.src;
+
+            // получаем размер картинки
+            var xhr = new XMLHttpRequest();
+            var param = new FormData();
+            param.append("imageName", src);
+            xhr.open("POST", ocWidget.pathConstructor.getFileStoragePath('size'), true);
+            xhr.onload = xhr.onerror = function () {
+
+                if (this.status == 200) {
+                    var resp = JSON.parse(xhr.responseText);
+                    if (resp.errors === undefined) {
+
+                        var modal = RTC().create('div', {
+                            className: 'ocWidget-modal',
+                            innerHTML: ocWidget.tpls.modal({
+                                src: src,
+                                size: resp,
+                            })
+                        });
+
+                        ocWidget.tpls.insertInToDom(document.body, modal);
+
+                        var img = modal.querySelector('img');
+
+                        img.onload = function () {
+
+                            var content = modal.querySelector('.ocWidget-modal-content');
+
+                            img.style.maxHeight = ocWidget.tools.winHeight - 100 + 'px';
+
+                            content.style.left = 'calc(50% - ' + content.offsetWidth / 2 + 'px)';
+                            content.style.top = 'calc(50% - ' + content.offsetHeight / 2 + 'px)';
+
+                            RTC(modal).addClass('ocWidget-modal-show');
+
+                        };
+
+                        self.current = modal;
+
+                    } else {
+                        console.log(resp.errors)
+                    }
+                } else {
+                    console.log("ocWidget.modal - error " + this.status);
+                }
+            };
+
+            xhr.send(param);
+
+        },
+
+        /**
+         * Удалить модальное окно из DOM
+         * @return {void}
+         */
+        hide: function () {
+            document.body.removeChild(this.current);
+        }
+    },
+
+    /**
+     * ЛОГИКА АВТОРИЗАЦИИ ЧЕРЕЗ ПРЕЧАТ ПОЛЯ
+     * @namespace
+     * @type {Object}
+     */
+    auth: {
+
+        el: {},
+
+        isDone: false,
+
+        inProgress: false,
+
+        firstMessage: '',
+
+        /**
+         * Показать пречат поля или выполнить авторизацию,
+         * если это F5 и они уже были заполненыили
+         * или
+         * если пречат поля выключены
+         * @return {void}
+         */
+        init: function () {
+
+            //ocWidget.chat.loading.hide();
+
+            // Если настройка пречат полей включена И
+            // авторизация еще не была сделана И
+            // в ocWidgetOptions.auth не прокинули объект авторизации ?
+            // показать пречат поля :
+            // сразу выполнить запрос авторизации
+
+            if (!ocWidget.storage.local.get('client-info') &&
+            !ocWidget.options.auth.full_name && ocWidget.options.behaviour.prechats.isEnabled) {
+                ocWidget.chat.auth.show('primary');
+            } else {
+                ocWidget.auth.request();
+            }
+
+        },
+
+        destroy: function () {
+            this.isDone = false;
+        },
+
+        /**
+         * Показать пречат поля
+         * @return {void}
+         */
+        show: function (screen) {
+            // Если нет свободных операторов - показать НАС НЕТ ОНЛАЙН
+            if (ocWidget.chat.offline.active) ocWidget.chat.offline.show();
+
+            if(screen && !this.prechats.activeScreen && this.hasPrechatScreen(screen)){
+                RTC(ocWidget.el.widget).addClass('ocWidget-auth-' + screen);
+                this.prechats.activeScreen = screen;
+            }
+        },
+
+        /**
+         * проверка на существование настроек в конфиге
+         * для целевого экрана с пречатполями
+         * @param screen
+         * @returns {*}
+         */
+        hasPrechatScreen: function(screen){
+            return ocWidget.options.behaviour.prechats[screen] && ocWidget.options.behaviour.prechats[screen].length;
+        },
+
+        /**
+         * Скрыть пречат поля
+         * @return {void}
+         */
+        hide: function () {
+            RTC(ocWidget.el.widget).removeClass('ocWidget-auth-primary');
+            RTC(ocWidget.el.widget).removeClass('ocWidget-auth-secondary');
+            RTC(ocWidget.el.widget).removeClass('ocWidget-offline-with-prechat');
+            this.prechats.activeScreen = false;
+        },
+
+        /**
+         * Логика МАСКИ НА ИНПУТ в пречат полях
+         * @namespace
+         * @type {Object}
+         */
+        input: {
+
+            phone: '',
+
+            position: {start: 0, end: 0},
+
+            /**
+             * Фокусировка на инпут при первом клике
+             * @param  {event} e - Событие браузера
+             * @return {void}
+             */
+            focus: function (event) {
+
+                var f_event = event;
+
+                if (this.block) return;
+
+                this.mask(f_event);
+
+                setTimeout(function () {
+                    var pos = f_event.target.value.indexOf('_');
+                    ocWidget.tools.setCursorPosition(f_event.target, pos, pos);
+                }, 10);
+
+            },
+            
+            /**
+             * Снятие фокуса на инпут при первом клике.
+             * Нужно для пречат поля phone
+             * @param  {event} e - Событие браузера
+             * @return {void}
+             */
+            blur: function (event) {
+                var f_event = event;
+                if (this.block) return;          
+                if(f_event.target.value.trim() === "+7 ( ___ ) ___ - __ - __") {
+                    f_event.target.value = '';
+                }
+            },
+
+            /**
+             * Основная логика МАСКИ
+             * @param  {event} e - Событие браузера
+             * @return {void}
+             */
+            mask: function (event) {
+
+                this.position = ocWidget.tools.getCursorPosition(event.target);
+
+                var matrix = event.target.placeholder,
+
+                    i = 0,
+
+                    def = matrix.replace(/\D/g, ""),
+
+                    val = event.target.value.replace(/\D/g, "");
+
+                def.length >= val.length && (val = def);
+
+                // Если +7 становится не на первом месте, возвращаем его обратно
+                if (val.indexOf(def)) val = def + val.slice(0, val.indexOf(def)) + val.slice(val.indexOf(def) + 1);
+
+                matrix = matrix.replace(/[_\d]/g, function (a) {
+
+                    return val.charAt(i++) || "_";
+
+                });
+
+                event.target.value = matrix;
+
+                var start = this.position.start,
+                    regexp = /\d/ig;
+
+                regexp.lastIndex = start - 1;
+
+                regexp.exec(matrix);
+
+                i = start <= event.target.placeholder.indexOf('_') ?
+                    matrix.indexOf('_') :
+                    start >= matrix.indexOf('_') ?
+                        matrix.indexOf('_') :
+                        matrix[start] === ' ' ?
+                            start <= matrix.lastIndexOf(val.slice(-1)) ?
+                                regexp.exec(matrix).index :
+                                matrix.indexOf('_') :
+                            start;
+
+                if (event.inputType === 'deleteContentForward' || event.inputType === 'deleteContentBackward')
+                    i = this.position.start;
+
+                ocWidget.tools.setCursorPosition(event.target, i, i);
+
+            }
+
+        },
+
+        /**
+         * Запрос информации о наличии операторов перед отправкой пречат-полей
+         */
+        checkBeforeRequest: function () {
+            var clientData = this.prechats.prepareData();
+            if(clientData && this.prechats.validateData(clientData)) {
+                ocWidget.auth.inProgress = true;
+                ocWidget.auth.check_chat_slot_available(clientData, true);
+            }
+        },
+
+        /**
+        * Методы обработки пречатполей
+        */
+        prechats: {
+
+            /**
+             * Флаг активного экрана
+             * false || primary || secondary
+             */
+            activeScreen: false,
+
+            /**
+             * Кеширование данных полей влияющих на отображение заглушек
+             */
+            savedPrechatFieldsData: {},
+
+            /**
+             * Подготовка данных пречатполей на отправку
+             * fieldName => full_name потмоу что сервер ожидает именно full_name
+             * @returns {{}}
+             */
+            prepareData: function() {
+                var fieldName, sendFieldName,
+                    clientData = {},
+                    prechatWrap = RTC('.ocWidget__prechat-' + this.activeScreen),
+                    storageData;
+                if(!ocWidget.chat.auth.prechats.activeScreen) return;
+                if(prechatWrap){
+                    for(var key in ocWidget.options.behaviour.prechats.primary){
+                        if(ocWidget.options.behaviour.prechats.primary.hasOwnProperty(key)) {
+                            fieldName = ocWidget.options.behaviour.prechats.primary[key];
+                            sendFieldName = fieldName === 'fullName' ? 'full_name' : fieldName ;
+                            if(~ocWidget.options.behaviour.prechats[this.activeScreen].indexOf(fieldName)
+                                && ocWidget.options.behaviour.prechats.list[fieldName].isEnabled) {
+                                fieldEl = RTC('.ocWidget__prechat-' + this.activeScreen + ' .ocWidget__chat__mid__auth__inputs-input-' + fieldName + ' .ocWidget__chat__mid__auth__inputs-input--field');
+                                clientData[sendFieldName] = '';
+                                if(fieldEl){
+                                    clientData[sendFieldName] = fieldEl.value;
+                                }
+                            } else {
+                                storageData = ocWidget.storage.local.get('client-info');
+                                if(storageData && storageData[fieldName]){
+                                    clientData[sendFieldName] = storageData[fieldName];
+                                }
+                            }
+                        }
+                    }
+                }
+                return clientData;
+            },
+
+            /**
+             * Валидация объекта подготовленных данных
+             * проверка на вывод ошибки в незаполненых полях
+             * full_name проверка с fullName
+             * @param savedPrechatFieldsData
+             * @returns {boolean}
+             */
+            validateData: function(savedPrechatFieldsData) {
+                var notError = true,
+                    prechats = ocWidget.options.behaviour.prechats.list;
+
+                for(var key in savedPrechatFieldsData) {
+                    if(savedPrechatFieldsData.hasOwnProperty(key)) {
+                        if(!this.hasValue(prechats[key === 'full_name' ? 'fullName': key], savedPrechatFieldsData[key])){
+                            notError = false;
+                            this.printError('.ocWidget__prechat-' + this.activeScreen + ' #ocWidget-auth-' + (key === 'full_name' ? 'fullName': key));
+                        }
+                    }
+                }
+                return notError;
+            },
+
+            /**
+             * Провека на заполненность поля
+             * @param settings
+             * @param value
+             * @returns {boolean}
+             */
+            hasValue: function(settings, value) {
+                if(settings.isNecessary && !value) {
+                    return false;
+                }
+                if(settings.type == 'phone' && ~value.indexOf('_')){
+                    return false;
+                }
+                return true;
+            },
+
+            /**
+             * Очистка всех пречатполей
+             * @param els
+             */
+            clearFields: function(els){
+                for(var j in els){
+                    if(els.hasOwnProperty(j)) {
+                        els[j].value = '';
+                    }
+                }
+            },
+
+            /**
+             * Выделение незаполненного поля
+             * @param el
+             */
+            printError: function(el){
+                RTC( RTC(el) ).addClass('ocWidget-input-error');
+            },
+
+            /**
+             * Снятие выделения с поля
+             * @param e
+             */
+            clearError: function(e){
+                RTC(event.target).removeClass('ocWidget-input-error');
+            },
+
+            /**
+             * Возвращает данные из конфига для выбранной скиллгруппы
+             * @param prechatName
+             * @param checkedValue
+             */
+            getActiveSkill: function(savedPrechatFieldsData){
+                var prechatName = Object.keys(savedPrechatFieldsData)[0],
+                    prechatValue = savedPrechatFieldsData[prechatName];
+
+                var skils = ocWidget.options.behaviour.prechats.list[prechatName].values;
+                for(var i in skils){
+                    if(skils.hasOwnProperty(i)) {
+                        if(skils[i].id == prechatValue){
+                            return skils[i];
+                        }
+                    }
+                }
+            },
+
+            /**
+             * Подготовка данных пречатполей для отправки check_chat_slot_available
+             * @param prechatName
+             * @param value
+             * @returns {{}}
+             */
+            getSavedPrechatFieldsData: function(savedPrechatFieldsData){
+                var prechatName = Object.keys(savedPrechatFieldsData)[0];
+
+                var activeSkill = ocWidget.chat.auth.prechats.getActiveSkill(savedPrechatFieldsData);
+
+                var location_data = {};
+                location_data[prechatName] = activeSkill.id;
+
+                return location_data;
+            },
+
+            /**
+             * Обработчики событий пречатполей
+             */
+            actions: {
+
+                /**
+                 * Выбор группы
+                 * @param prechatName
+                 */
+                checkAvaliableOperatorInGroup: function(prechatName){
+
+                    if(!event.target.value){
+                        ocWidget.chat.offline.hide();
+                        delete ocWidget.chat.auth.prechats.savedPrechatFieldsData[prechatName];
+                        return;
+                    }
+
+                    ocWidget.chat.auth.prechats.savedPrechatFieldsData[prechatName] = event.target.value;
+
+                    var location_data = ocWidget.chat.auth.prechats.getSavedPrechatFieldsData(ocWidget.chat.auth.prechats.savedPrechatFieldsData);
+
+                    ocWidget.auth.check_chat_slot_available(location_data, true);
+                }
+
+            }
+
+        },
+
+        /**
+         * Запрос авторизации через пречат поля
+         * @return {void}
+         */
+        request: function () {
+            this.isDone = true;
+
+            var clientData = this.prechats.prepareData();
+            if(clientData){
+                this.firstMessage = clientData.message;
+                ocWidget.chat.msg.el.msgTextarea.value = clientData.message;
+
+                ocWidget.storage.local.set('client-info', clientData);
+                ocWidget.auth.client = clientData;
+
+                ocWidget.auth.request(clientData);
+
+                var fields = RTC('.ocWidget__chat__mid__auth input, .ocWidget__chat__mid__auth textarea, .ocWidget__chat__mid__auth select');
+                this.prechats.clearFields(fields);
+            }
+        },
+
+        /**
+         * Логика обработки auth.success в пречат полях
+         * @return {void}
+         */
+        response: function () {
+            ocWidget.chat.msg.textarea.reset();
+            this.hide();
+            ocWidget.chat.msg.textarea.resize();
+        }
+    },
+
+    /**
+     * Логика экрана сообщения с текстом
+     * @namespace
+     * @type {Object}
+     */
+    alert: {
+
+        is: {
+            active: false
+        },
+
+        el: {},
+
+        // Дефолтный текст
+        text: 'Здравствуйте! <br> Мы с удовольствием ответим на интересующие Вас вопросы',
+
+        cacheElements: function () {
+
+            this.el.alertMid = RTC('.ocWidget__chat__mid__alert');
+            this.el.alertScreen = RTC('.ocWidget__chat__mid__alert__message');
+            this.el.alertText = RTC('.ocWidget__chat__mid__alert__message-text');
+
+        },
+
+        /**
+         * Установить текст
+         * @param {string} text - текст для отображения
+         * @return {object} возвращает this - ocWidget.chat.alert
+         */
+        set: function (text) {
+
+            this.text = text;
+
+            this.el.alertText.innerHTML = this.text;
+
+            return this;
+
+        },
+
+        /**
+         * Показать экран
+         * @return {void}
+         */
+        show: function () {
+
+            this.is.active = true;
+
+            RTC(ocWidget.el.widget).addClass('ocWidget-alert');
+
+            this.position();
+
+        },
+
+        /**
+         * Скрыть экран
+         * @return {void}
+         */
+        hide: function () {
+
+            this.is.active = false;
+
+            RTC(ocWidget.el.widget).removeClass('ocWidget-alert');
+
+        },
+
+        /**
+         * Сбросить установленный в .set() текст на дефолтный
+         * @return {object} возвращает this - ocWidget.chat.alert
+         */
+        reset: function () {
+
+            if (!this.el.alertText) return;
+
+            this.text = 'Здравствуйте! <br> Мы с удовольствием ответим на интересующие Вас вопросы';
+
+            this.el.alertText.innerHTML = this.text;
+
+            this.position();
+
+            return this;
+
+        },
+
+        /**
+         * JS выравнивающий текст по цетру
+         * @return {void}
+         */
+        position: function () {
+            this.el.alertMid.style.display = 'block';
+            this.el.alertScreen.style.height = this.el.alertText.offsetHeight + 'px';
+            this.el.alertMid.style.display = '';
+        },
+
+    },
+
+    /**
+     * Методы чата
+     * @namespace
+     * @type {Object}
+     */
+    msg: {
+
+        el: {},
+
+        /**
+         * хранит состояние элемента (есть в DOM или нет) (активен экран или нет)
+         * @type {Object}
+         */
+        is: {
+            opened: false,
+            active: false
+        },
+
+        /**
+         * Показывает чат
+         * @return {void}
+         */
+        show: function () {
+
+            this.is.opened = true;
+
+            RTC(ocWidget.el.widget).addClass('ocWidget-msg');
+
+        },
+
+        /**
+         * Скрывает чат
+         * @return {void}
+         */
+        hide: function () {
+            this.is.opened = false;
+
+            RTC(ocWidget.el.widget).removeClass('ocWidget-msg');
+        },
+
+        /**
+         * Кэширует элементы в объекте ocWidget.chat.msg.el
+         * @return {void}
+         */
+        cacheElements: function () {
+            this.el.mid = RTC('.ocWidget__chat__mid');
+            this.el.dialog = RTC('.ocWidget__chat__mid__msg');
+            this.el.fileUploadInput = RTC('#ocWidget-fileUploadInput');
+            this.el.fileUploadBlock = RTC('.ocWidget__chat__mid__fileupload');
+            this.el.dragndropInput = RTC('#ocWidget-dragndropInput');
+            this.el.fileUploadForm = RTC('.ocWidget__chat__mid__file-form');
+            this.el.dragdrop = RTC('.ocWidget__chat__mid__dragndrop');
+            this.el.fileUploadDragdrop = RTC('.ocWidget__chat__mid__fileupload--block-dragndrop');
+            this.el.fileUploadLabel = RTC('.ocWidget__chat__bot__msg-clip');
+            this.el.fileUploadText = RTC('.ocWidget__chat__bot__msg__fileUpload-text');
+            this.el.fileUploadTextError = RTC('.ocWidget__chat__bot__msg__fileUpload-textError');
+            this.el.fileUploadIco = RTC('.ocWidget__chat__bot__msg__fileUpload-ico');
+            this.el.fileUploadloading = RTC('.ocWidget__chat__bot__msg__fileUpload-loading');
+            this.el.cobrowsePanel = RTC('.ocWidget__chat__bot__msg--cobrowsePanel');
+            this.el.msgTextarea = RTC('.ocWidget__chat__bot__msg-textarea');
+            this.handlers();
+        },
+
+        /**
+         * Вешает обработчики
+         * @return {void}
+         */
+        handlers: function () {
+
+            var self = this;
+
+            var isAdvancedUpload = function () {
+                var div = document.createElement('div');
+                return (('draggable' in div) || ('ondragstart' in div && 'ondrop' in div)) && 'FormData' in window && 'FileReader' in window;
+            }();
+
+            var isWebRTCSupported = function () {
+                return ('RTCPeerConnection' in window || 'webkitRTCPeerConnection' in window || 'mozRTCPeerConnection' in window || 'RTCIceGatherer' in window);
+            }();
+
+            var timeout,
+                func = '';
+
+            if (isAdvancedUpload && !ocWidget.options.behaviour.mobile) {
+
+                document.body.ondrop = document.body.ondragover = function (event) {
+
+                    if (func === 'active') return false;
+                    func = 'active';
+
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    if(!~Array.prototype.indexOf.call(event.dataTransfer.types, 'Files')) {
+                        return false;
+                    }
+
+                    ocWidget.chat.msg.el.msgTextarea.blur();
+                    ocWidget.chat.msg.textarea.reset();
+
+                    clearTimeout(timeout);
+
+                    activate();
+
+                    return false;
+
+                };
+
+                document.body.ondragleave = document.body.ondrop = function (event) {
+
+                    if (func === 'disactive') return false;
+                    func = 'disactive';
+
+                    event.preventDefault();
+                    event.stopPropagation();
+
+                    timeout = setTimeout(disactivate, 0);
+
+                    return false;
+                };
+
+                self.el.dragdrop.ondrop = self.el.fileUploadBlock.ondrop = function (event) {
+
+                    func = '';
+
+                    event.preventDefault();
+                    event.stopPropagation();
+                    RTC(ocWidget.el.widget).removeClass('ocWidget-dragndrop');
+                    var droppedFile = event.dataTransfer.files[0];
+                    ocWidget.chat.msg.fileUpload.check(droppedFile);
+                };
+
+                function activate() {
+                    RTC(ocWidget.el.widget).addClass('ocWidget-dragndrop');
+                };
+
+                function disactivate() {
+                    RTC(ocWidget.el.widget).removeClass('ocWidget-dragndrop');
+                }
+
+            }
+
+        },
+
+        /**
+         * Пагинация
+         * @namespace
+         * @type {Object}
+         */
+        pagination: {
+
+            scrollHeight: 0,
+
+            messageId: 0,
+
+            timeout: 0,
+
+            active: false,
+
+            messages: [],
+
+            messagesSort: [],
+
+            div: null,
+
+            /**
+             * Включить пагинацию
+             * @return {void}
+             */
+            turnOn: function () {
+                this.active = true;
+                ocWidget.storage.local.set('pagination', true);
+            },
+
+            /**
+             * Выключить пагинацию
+             * @return {void}
+             */
+            turnOff: function () {
+                this.active = false;
+                this.div = document.createElement('div');
+                ocWidget.chat.msg.pagination.messageId = 0;
+                ocWidget.storage.local.remove('pagination');
+            },
+
+            /**
+             * Вызывается при window.onResize
+             * @param  {event} e - событие браузера
+             * @return {void}
+             */
+            scroll: function (event) {
+
+                if(event.target.scrollTop === 0 && ocWidget.chat.msg.pagination.active &&
+                  ocWidget.chat.auth.prechats.activeScreen !== "secondary" && !RTC(ocWidget.el.widget).hasClass('ocWidget-offline') || event.target.scrollTop === 0 && ocWidget.chat.msg.pagination.active &&
+                RTC(ocWidget.el.widget).hasClass('ocWidget-offline-showHistory')) {
+                    ocWidget.chat.msg.pagination.request();
+                }
+
+
+            },
+
+            /**
+             * Запрос авторизации
+             * @return {void}
+             */
+            request: function () {
+                var uuid = ocWidget.tools.randomStr(10);
+                var data = ocWidget.methods.history_request.request = {
+                    action: 'history_request',
+                    uuid: uuid,
+                    data: {
+                        message_id: this.messageId
+                    }
+                };
+
+                ocWidget.websocket.send(data);
+            },
+
+            /**
+             * Обработчик history_request с пагинацией
+             * @param  {object} mess - это объект - history_reply.messages[объект]
+             * @return {void}
+             */
+            response: function (mess) {
+
+                var self = this;
+
+                clearTimeout(this.timeout);
+
+                if (this.messages.indexOf(mess.id) >= 0) return;
+
+                this.messages.push(+mess.id);
+
+                ocWidget.chat.msg.pagination.messageId = +mess.id;
+
+                for (var msg in mess.data) {
+                    if(mess.data.hasOwnProperty(msg)) {
+                        this.messagesSort.push(mess.data[msg]);
+                    }
+                }
+
+                this.messagesSort.sort(function (A, B) {
+                    return A.time - B.time;
+                });
+
+                this.div = document.createElement('div');
+                this.div.className = 'ocAnimation-fadeIn';
+
+                var length = this.messagesSort.length,
+                    key,
+                    i;
+
+                for (i = 0; i < length; i++) {
+
+                    key = this.messagesSort[i];
+
+                    ocWidget.chat.msg.message.lastMessage = i;
+
+                    if (mess.agent_id === 0)
+                        ocWidget.chat.msg.message.render.sent(key, 'pagination');
+                    else if (mess.agent_id !== 0) {
+                        ocWidget.chat.msg.message.render.operator(mess.agent_id, 'pagination');
+                        ocWidget.chat.msg.message.render.received(key, mess.agent_id, 'pagination');
+                    }
+
+                }
+
+                ocWidget.chat.msg.el.dialog.insertBefore(this.div, ocWidget.chat.msg.el.dialog.firstChild);
+
+                this.messagesSort = [];
+
+                this.timeout = setTimeout(self.scrollBottom, 33);
+
+                this.scrollHeight += this.div.scrollHeight;
+
+            },
+
+            /**
+             * После отрисовки блока с пагинацией нужно опустить скролл на место ( до момента отрисовки )
+             * @return {void}
+             */
+            scrollBottom: function () {
+
+                ocWidget.chat.msg.el.dialog.scrollTop = ocWidget.chat.msg.pagination.scrollHeight;
+
+                ocWidget.chat.msg.pagination.div.scrollHeight = 0;
+
+                ocWidget.chat.msg.pagination.scrollHeight = 0;
+
+            },
+
+            clearHistory: function(){
+                ocWidget.chat.msg.el.dialog.innerHTML = '';
+                ocWidget.chat.msg.pagination.turnOff();
+            }
+
+        },
+
+        /**
+         * Отправка сообщения + отрисовка
+         * @namespace
+         * @type {Object}
+         */
+        message: {
+
+            trigger: false,
+
+            /**
+             * Максимальная длина исходящего сообщения
+             * (макс. разрешенное кол-во символов)
+             */
+            maxLength: 4000,
+
+            messages: {},
+
+            timeout: {},
+
+            data: {},
+
+            lastMessage: 0,
+
+            /**
+             * Таймер отвечающий за склеивание ИСХОДЯЩИХ сообщений
+             * @type {Object}
+             */
+            sentTimer: {
+                limit: 60000, // в течение какого времени отправленные сообщения будут склеиваться
+                time: 0,
+                check: function (message) {
+                    if (Date.now() - ocWidget.chat.msg.message.sentTimer.time <=
+                        ocWidget.chat.msg.message.sentTimer.limit &&
+                        RTC(message.previousElementSibling).hasClass('ocWidget__message-sent'))
+                        RTC(message.previousElementSibling).addClass('ocWidget-message-group');
+                    ocWidget.chat.msg.message.sentTimer.time = Date.now();
+                }
+            },
+
+            /**
+             * Таймер отвечающий за склеивание ВХОДЯЩИХ сообщений
+             * @type {Object}
+             */
+            receivedTimer: {
+                limit: 60000, // в течение какого времени входящие сообщения будут склеиваться
+                time: 0,
+                check: function (message) {
+                    if (Date.now() - ocWidget.chat.msg.message.receivedTimer.time <=
+                        ocWidget.chat.msg.message.receivedTimer.limit &&
+                        RTC(message.previousElementSibling).hasClass('ocWidget__message-received'))
+                        RTC(message.previousElementSibling).addClass('ocWidget-message-group');
+
+                    ocWidget.chat.msg.message.receivedTimer.time = Date.now();
+                }
+            },
+
+            /**
+             * ОТПРАВКА СООБЩЕНИЯ
+             * @return {void}
+             */
+            send: function () {
+                var text = ocWidget.chat.msg.el.msgTextarea.value;
+
+                text = text.length > this.maxLength ? text.substr(0, text.length - (text.length - this.maxLength)) : text;
+                // ocWidget.chat.shake();
+                if (!ocWidget.options.settings.online || text.trim() === '') {
+                    return;
+                } else {
+
+                    var self = this;
+
+                    this.data = ocWidget.storage.local.get('notDeliveredData') || {};
+
+                    var uuid = ocWidget.tools.randomStr(10);
+                    var formattedText = ocWidget.chat.msg.message.prepareText(text).trim();
+
+                    var message = RTC().create('div', {
+                        id: uuid,
+                        className: 'ocWidget__message-sent ocWidget-message-loading ocAnimation-fadeIn',
+                        innerHTML: ocWidget.tpls.sentMessage({
+                            text: formattedText,
+                            date: ocWidget.tools.date()
+                        })
+                    });
+
+                    ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+
+                    ocWidget.chat.msg.textarea.block.off()
+
+                    ocWidget.chat.msg.message.sentTimer.check(message);
+
+                    var data = {
+                        type: 1,
+                        uuid: uuid,
+                        text: text.trim(),
+                    };
+
+                    ocWidget.websocket.send({
+                        action: 'send_message',
+                        data: data,
+                        uuid: uuid
+                    });
+
+                    this.messages[uuid] = message;
+
+                    this.data[uuid] = data;
+
+                    ocWidget.storage.local.set('notDeliveredData', this.data);
+
+                    ocWidget.chat.msg.el.msgTextarea.focus();
+
+                    this.timeout[uuid] = setTimeout(function () {
+
+                        RTC(self.messages[uuid]).addClass('ocWidget-message-error');
+
+                        ocWidget.tools.scrollToBottom();
+
+                    }, 20000);
+
+                    ocWidget.chat.msg.el.msgTextarea.value = '';
+                    ocWidget.storage.local.remove('send_message');
+
+
+                    ocWidget.chat.msg.textarea.reset();
+
+                    ocWidget.chat.msg.textarea.resize(ocWidget.chat.msg.el.msgTextarea);
+
+                    if (ocWidget.chat.alert.is.active) ocWidget.chat.alert.hide();
+
+                    ocWidget.storage.session.set('notDeliveredData', this.data);
+
+                    if (!this.trigger)
+                        this.trigger = RTC(document).trigger('ocwidget.chatSendMessage');
+
+                    ocWidget.tools.scrollToBottom();
+
+                }
+
+            },
+
+            replaceUnsafeTags: function (text) {
+                var lt = /</g,
+                    gt = />/g,
+                    ap = /'/g,
+                    ic = /"/g;
+                text = text.toString().replace(lt, "&lt;").replace(gt, "&gt;").replace(ap, "&#39;").replace(ic, "&#34;");
+
+                return text
+            },
+
+            prepareText: function(text){
+                var escapedText = ocWidget.chat.msg.message.replaceUnsafeTags(text);
+                var formattedText = ocWidget.tools.textIntoHtml(escapedText).trim();
+                return formattedText;
+            },
+
+            /**
+             * ПОЛУЧЕНИЕ ПОДТВЕРЖДЕНИЯ, ЧТО ИСХОДЯЩЕЕ СООБЩЕНИЕ ДОШЛО.
+             * @param  {object} mess - объект сообщений
+             * @return {void}
+             */
+            received: function (mess) {
+
+                var messages = this.messages;
+                var timeout = this.timeout;
+                var data = ocWidget.storage.local.get('notDeliveredData') || this.data;
+
+                if (!document.getElementById(mess.uuid) && mess.time > this.sentTimer.time) this.render.sent(mess);
+                else {
+                    for (var message in data) {
+                        if(data.hasOwnProperty(message)) {
+                            if (mess.uuid === message) {
+                                // Вставляем актуальное время отправки сообщений
+                                if (mess.type === 1)
+                                    document.getElementById(mess.uuid).querySelector('.ocWidget__chat__mid__msg__sentMessage__message-date')
+                                        .innerText = ocWidget.tools.date(mess.time * 1000, false);
+                                else if (mess.type === 2)
+                                    document.getElementById(mess.uuid).querySelector('.ocWidget__chat__mid__msg__sentImage__message-date')
+                                        .innerText = ocWidget.tools.date(mess.time * 1000, false);
+    
+                                // Сбрасываем таймеры и классы с сообщения
+                                clearTimeout(timeout[message]);
+                                RTC(document.getElementById(mess.uuid)).removeClass('ocWidget-message-loading');
+                                RTC(document.getElementById(mess.uuid)).removeClass('ocWidget-message-error');
+                                if (messages[message]) delete messages[message];
+                                if (timeout[message]) delete timeout[message];
+                                if (data[message]) delete data[message];
+    
+                                ocWidget.storage.local.set('notDeliveredData', data);
+                            }
+                        }
+                    }
+                }
+
+                if (!ocWidget.options.settings.online)
+                    ocWidget.options.settings.online = true;
+
+            },
+
+            /**
+             * Метод повторной отправки сообщения
+             * @param  {node} el - DOM элемент - неотправленное сообщение
+             * @return {void}
+             */
+            retry: function (event, el) {
+
+                if (/refresh/i.test(event.target.className)) {
+
+                    var self = this,
+                        data = ocWidget.storage.local.get('notDeliveredData') || this.data,
+                        msg = el.parentElement,
+                        uuid = msg.getAttribute('id');
+
+                    ocWidget.websocket.send({
+                        action: 'send_message',
+                        data: data[uuid],
+                        uuid: uuid
+                    });
+
+                    RTC(msg).removeClass('ocWidget-message-error');
+                    RTC(msg).addClass('ocWidget-message-loading');
+
+                    this.timeout[uuid] = setTimeout(function () {
+                        RTC(msg).addClass('ocWidget-message-error');
+                    }, 20000);
+
+                }
+            },
+
+            /**
+             * Получение сообщения + отрисовка
+             * @param  {object} mess - Объект сообщений
+             * @return {void}
+             */
+            receive: function (mess) {
+                var self = this;
+                for (var message in mess.data) {
+                    if(mess.data.hasOwnProperty(message)) {
+                        if (message <= self.lastMessage) continue;
+                        self.lastMessage = message;
+                        ocWidget.storage.local.set('lastMessage', message);
+                        if (mess.agent_id === 0) {
+                            ocWidget.chat.msg.message.received(mess.data[message]);
+                        }
+                        else if (mess.agent_id !== 0) {
+                            ocWidget.chat.msg.message.render.operator(mess.agent_id);
+                            ocWidget.chat.msg.message.render.received(mess.data[message], mess.agent_id);
+                        }
+                    }
+                }
+
+                ocWidget.chat.alert.hide();
+
+                ocWidget.options.settings.available_operator = ocWidget.chat.msg.is.active = true;
+
+                ocWidget.tools.scrollToBottom();
+
+            },
+
+            /**
+             * ВСЕ МЕТОДЫ ОТРИСОВКИ
+             * @namespace
+             * @type {Object}
+             */
+            render: {
+
+                messagesGroupSort: [],
+
+                messagesSort: [],
+
+                operators: [],
+
+                /**
+                 * ОТРИСОВКА ИКОНКИ ОПЕРАТОРА
+                 * @param  {number} agent - id Агента
+                 * @param  {boolean} pagination - Отрисовка в объект пагинации или обычная отрисовка истории
+                 * @return {void}
+                 */
+                operator: function (agent, pagination) {
+
+                    if (this.operators.indexOf(agent) >= 0) return;
+                    else {
+                        this.operators = [];
+                        this.operators.push(agent);
+                    }
+
+                    if (ocWidget.auth.operator[agent] && ocWidget.auth.operator[agent].agent_id === agent) {
+
+                        var operator = RTC().create('div', {
+                            className: 'ocWidget__operator ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.operator(agent)
+                        });
+
+                        if (!pagination) {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, operator);
+                            ocWidget.tools.scrollToBottom();
+                        } else ocWidget.tpls.insertInToDom(ocWidget.chat.msg.pagination.div, operator);
+                    }
+
+                },
+
+                /**
+                 * ПРЕДВАРИТЕЛЬНАЯ ОБРАБОТКА ИСТОРИИ ПЕРЕД ОТРИСОВКОЙ
+                 * @param  {object} mess - Объект сообщений
+                 * @return {void}
+                 */
+                history: function (mess) {
+
+                    ocWidget.chat.msg.pagination.messages.push(+mess.id);
+
+                    ocWidget.chat.msg.pagination.turnOn();
+                    ocWidget.options.settings.available_operator = ocWidget.chat.msg.is.active = true;
+
+                    if (!ocWidget.chat.msg.pagination.messageId)
+                        ocWidget.chat.msg.pagination.messageId = +mess.id;
+
+                    for (var msg in mess.data) {
+                        if(mess.data.hasOwnProperty(msg)) {
+                            this.messagesSort.push(mess.data[msg]);
+                        }
+                    }
+
+                    this.messagesSort.sort(function (A, B) {
+                        return A.time - B.time;
+                    });
+
+                    var length = this.messagesSort.length,
+                        key,
+                        i;
+
+                    for (i = 0; i < length; i++) {
+
+                        key = this.messagesSort[i];
+
+                        ocWidget.chat.msg.message.lastMessage = i;
+
+                        if (mess.agent_id === 0) ocWidget.chat.msg.message.render.sent(key);
+                        else if (mess.agent_id != 0) {
+                            ocWidget.chat.msg.message.render.operator(mess.agent_id);
+                            ocWidget.chat.msg.message.render.received(key, mess.agent_id, false, true);
+                        }
+
+                    }
+                    ;
+
+                    this.messagesSort = [];
+
+                    ocWidget.tools.scrollToBottom('toEnd');
+
+                    ocWidget.chat.msg.message.receivedTimer.time = 0;
+                    ocWidget.chat.msg.message.sentTimer.time = 0;
+
+                },
+
+                /**
+                 * ОТРИСОВКА ВХОДЯЩИХ СООБЩЕНИЙ
+                 * @param  {object} mess       - Объект сообщений
+                 * @param  {number} agent      - id агента
+                 * @param  {boolean} pagination - Отрисовка в объект пагинации или обычная отрисовка истории
+                 * @return {void}
+                 */
+                received: function (mess, agent, pagination, history_flag) {
+                    var message, text;
+
+                    var date = ocWidget.tools.date(mess.time * 1000, agent);
+
+                    if (ocWidget.chat.msg.typing.element) ocWidget.chat.msg.typing.hide();
+
+                    if (mess.text) {
+                        if (ocWidget.options.behaviour.client_data && ocWidget.options.behaviour.client_data.full_name && /_ИМЯ_ПОЛЬЗОВАТЕЛЯ_/.test(mess.text)) {
+                            mess.text = mess.text.replace(new RegExp("_ИМЯ_ПОЛЬЗОВАТЕЛЯ_", 'g'), ocWidget.options.behaviour.client_data.full_name);
+                        }
+                        mess.text = ocWidget.tools.escapeCharacters(mess.text);
+                    }
+
+
+                    if (mess.type === 1) {
+
+                        text = ocWidget.tools.textIntoHtml(mess.text);
+
+                        message = RTC().create('div', {
+                            className: 'ocWidget__message-received ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.receivedMessage({
+                                text: text,
+                                date: date
+                            })
+                        });
+
+                        if (!pagination) {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            ocWidget.tools.scrollToBottom();
+                            ocWidget.chat.msg.message.receivedTimer.check(message);
+                        } else {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.pagination.div, message);
+                            ocWidget.chat.msg.message.receivedTimer.check(message);
+                        }
+
+                    } else if (mess.type === 2) {
+
+                        message = RTC().create('div', {
+                            className: 'ocWidget__message-received ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.receivedImage({
+                                src: mess.media_thumb,
+                                modal: mess.media_url,
+                                date: date
+                            })
+                        });
+
+                        if (!pagination) {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            ocWidget.chat.msg.message.receivedTimer.check(message);
+                            message.querySelector('.ocWidget-img').onload = function () {
+                                ocWidget.tools.scrollToBottom('toEnd');
+                            };
+                        } else {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            ocWidget.chat.msg.message.receivedTimer.check(message);
+                        }
+
+                    } else if (mess.type === 0) {
+
+                        text = ocWidget.tools.textIntoHtml(mess.text);
+
+                        message = RTC().create('div', {
+                            className: 'ocWidget__message ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.systemMessage({
+                                text: text,
+                                date: ocWidget.tools.date(undefined, 'operator')
+                            })
+                        });
+                        if (!pagination) {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            ocWidget.tools.scrollToBottom();
+                            ocWidget.chat.msg.message.receivedTimer.check(message);
+                        } else {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.pagination.div, message);
+                            ocWidget.chat.msg.message.receivedTimer.check(message);
+                        }
+
+                    } else if (mess.type === 5) {
+
+                        message = RTC().create('div', {
+                            className: 'ocWidget__message ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.receivedDoc({
+                                file: {
+                                    name: 'Файл',
+                                    type: 'Файл',
+                                    href: mess.media_url
+                                },
+                                date: date
+                            })
+                        });
+
+                        // ОТРИСОВАТЬ СООБЩЕНИЕ В ПАГИНАЦИИ ИЛИ В ОБЩЕМ ПОТОКЕ
+                        if (!pagination) {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            ocWidget.chat.msg.message.receivedTimer.check(message);
+                            ocWidget.tools.scrollToBottom();
+                        } else {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.pagination.div, message);
+                            ocWidget.chat.msg.message.receivedTimer.check(message);
+                        }
+
+
+                    } else if (mess.type === 6) { // ШАРИНГ
+
+                        if (ocWidget.options.behaviour.debug)
+                            console.log('receive: ' + mess.text);
+
+                        text = JSON.parse(mess.text);
+
+                        var room_id = text.room_id,
+                            user_id = text.user_id;
+
+                        if (ocWidget.options.behaviour.debug)
+                            console.log('room: ' + room_id, 'user: ' + user_id, 'SHARING!!!');
+
+                        message = RTC().create('div', {
+                            className: 'ocWidget__message-received ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.sharingRequest({
+                                date: ocWidget.tools.date(mess.time * 1000, 'not'),
+                                agent_id: agent
+                            })
+                        });
+                        ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                        ocWidget.tools.scrollToBottom();
+
+                        ocWidget.chat.screenSharing.init(room_id, user_id);
+
+                    }
+
+                    // ЛОГИКА НЕПРОЧИТАННЫХ СООБЩЕНИЙ ( НА ФРОНТЕ )
+
+                    if ( !history_flag && ((mess.type != 6 && mess.agent_id != 0 && ocWidget.bar.is.opened) || ocWidget.chat.menu.active)) {
+                        ocWidget.bar.unreadCounter.add();
+                    }
+                    
+                },
+
+                /**
+                 * ОТРИСОВКА ИСХОДЯЩИХ СООБЩЕНИЙ
+                 * @param  {object} mess       - Объект сообщений
+                 * @param  {boolean} pagination - Отрисовка в объект пагинации или обычная отрисовка истории
+                 * @return {void}
+                 */
+                sent: function (mess, pagination) {
+                    var message;
+
+                    var date = ocWidget.tools.date(mess.time * 1000);
+
+                    if (mess.type === 1) {
+	                    var text = ocWidget.chat.msg.message.prepareText(mess.text);
+
+                        message = RTC().create('div', {
+                            className: 'ocWidget__message-sent ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.sentMessage({
+                                text: text,
+                                date: date
+                            })
+                        });
+
+                        if (!pagination) {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            ocWidget.tools.scrollToBottom();
+                            ocWidget.chat.msg.message.sentTimer.check(message);
+                        } else {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.pagination.div, message);
+                            ocWidget.chat.msg.message.sentTimer.check(message);
+                        }
+
+                    } else if (mess.type === 2) {
+
+                        message = RTC().create('div', {
+                            className: 'ocWidget__message-sent ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.sentImage({
+                                src: mess.media_thumb,
+                                modal: mess.media_url,
+                                date: date
+                            })
+                        });
+
+                        if (!pagination) {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            ocWidget.chat.msg.message.sentTimer.check(message);
+                            message.querySelector('.ocWidget-img').onload = function () {
+                                ocWidget.tools.scrollToBottom('toEnd');
+                            };
+                        } else {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.pagination.div, message);
+                            ocWidget.chat.msg.message.sentTimer.check(message);
+                        }
+
+                    } else if (mess.type === 5) {
+
+                        message = RTC().create('div', {
+                            className: 'ocWidget__message ocAnimation-fadeIn',
+                            innerHTML: ocWidget.tpls.sentDoc({
+                                file: {
+                                    name: 'Файл',
+                                    type: 'Файл',
+                                    href: mess.media_url
+                                },
+                                date: date
+                            })
+                        });
+
+                        // ОТРИСОВАТЬ СООБЩЕНИЕ В ПАГИНАЦИИ ИЛИ В ОБЩЕМ ПОТОКЕ
+                        if (!pagination) {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+                            ocWidget.chat.msg.message.sentTimer.check(message);
+                            ocWidget.tools.scrollToBottom();
+                        } else {
+                            ocWidget.tpls.insertInToDom(ocWidget.chat.msg.pagination.div, message);
+                            ocWidget.chat.msg.message.sentTimer.check(message);
+                        }
+                    }
+
+                }
+            }
+
+        },
+
+        /**
+         * ВСЯ ЛОГИКА КОБРАУЗИНГА
+         * @namespace
+         * @type {Object}
+         */
+        cobrowsing: {
+
+            is: {
+                active: false
+            },
+
+            session_id: 0,
+
+            message: {},
+
+            /**
+             * Показать панель кобраузинга
+             * @return {void}
+             */
+            show: function () {
+                this.is.active = true;
+                RTC(ocWidget.el.widget).addClass('ocWidget-cobrowsing');
+                ocWidget.chat.msg.textarea.resize();
+            },
+
+            /**
+             * Скрыть панель кобраузинга
+             * @return {void}
+             */
+            hide: function () {
+                this.is.active = false;
+                RTC(ocWidget.el.widget).removeClass('ocWidget-cobrowsing');
+                ocWidget.chat.msg.textarea.resize();
+            },
+
+            /**
+             * Отрисовка запроса кобраузинга
+             * @param  {object} data - содержит ID сессии кобраузинга
+             * @return {void}
+             */
+            request: function (data) {
+                var self = this,
+                    date = ocWidget.tools.date(false, 'not');
+
+                if (this.session_id)
+                    this.delete(this.session_id);
+
+                this.session_id = data.session;
+
+                var message = RTC().create('div', {
+                    className: 'ocAnimation-fadeIn ocWidget__message' + ocWidget.chat.msg.cobrowsing.session_id,
+                    innerHTML: ocWidget.tpls.cobrowsingRequest({
+                        date: date
+                    })
+                });
+
+                ocWidget.chat.msg.cobrowsing.message[this.session_id] = message;
+
+                ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+
+                ocWidget.tools.scrollToBottom();
+
+            },
+
+            /**
+             * Включить кобраузинг - срабатывает при клике на кнопку в запросе
+             * @return {void}
+             */
+            init: function () {
+
+                var self = this;
+
+                var uuid = ocWidget.methods.co_accept.uuid = ocWidget.tools.randomStr(10);
+                var data = ocWidget.methods.co_accept.request = {
+                    action: 'co_accept',
+                    secure: ocWidget.options.settings.secure,
+                    session_id: self.session_id,
+                    url: window.location.toString(),
+                    uuid: uuid
+                };
+
+                ocWidget.websocket.send(data);
+
+                ocWidget.chat.msg.el.dialog.removeChild(ocWidget.chat.msg.cobrowsing.message[self.session_id]);
+
+                ocWidget.storage.session.remove('co_request');
+
+                self.session_id = 0;
+
+            },
+
+            /**
+             * Удалить из DOM запрос кобраузинга
+             * @param  {number} id - id сессии кобраузинга
+             * @return {void}
+             */
+            delete: function (id) {
+
+                var self = this;
+
+                this.is.active = false;
+
+                id = id || self.session_id;
+
+                if (!ocWidget.chat.msg.cobrowsing.message[id]) return;
+
+                ocWidget.chat.msg.el.dialog.removeChild(ocWidget.chat.msg.cobrowsing.message[id]);
+
+                delete ocWidget.chat.msg.cobrowsing.message[id];
+
+                var uuid = ocWidget.methods.co_deny.uuid = ocWidget.tools.randomStr(10);
+                var data = ocWidget.methods.co_deny.request = {
+                    action: 'co_deny',
+                    session_id: id,
+                    uuid: uuid
+                };
+
+                ocWidget.websocket.send(data);
+                ocWidget.storage.session.remove('co_request');
+
+            },
+
+        },
+
+        /**
+         * ЛОГИКА ТАЙПИНГА - ОТПРАВКА/ПОЛУЧЕНИЕ
+         * @namespace
+         * @type {Object}
+         */
+        typing: {
+
+            /**
+             * Общая логика ВКЛ/ВЫКЛ
+             * @return {void}
+             */
+            init: function () {
+                return;
+                this.show();
+                setTimeout(this.hide, 5000);
+            },
+
+            /**
+             * Отрисовать в DOM
+             * @return {void}
+             */
+            show: function () {
+
+                if (ocWidget.chat.msg.typing.element) return;
+
+                var message = RTC().create('div', {
+                    className: 'ocWidget__typing ocAnimation-fadeIn',
+                    innerHTML: ocWidget.tpls.typing()
+                });
+
+                ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+
+                ocWidget.chat.msg.typing.element = message;
+
+                ocWidget.tools.scrollToBottom();
+            },
+            /**
+             * Удалить из DOM
+             * @return {void}
+             */
+            hide: function () {
+                if (ocWidget.chat.msg.typing.element)
+                    ocWidget.chat.msg.el.dialog.removeChild(ocWidget.chat.msg.typing.element);
+
+                ocWidget.chat.msg.typing.element = '';
+            },
+
+            block: false,
+
+            /**
+             * Включить блокировку отправки
+             * @return {void}
+             */
+            blockOn: function () {
+                this.block = true;
+                setTimeout(this.blockOff, 5000);
+            },
+
+            /**
+             * Выключить блокировку отправки
+             * @return {void}
+             */
+            blockOff: function () {
+                ocWidget.chat.msg.typing.block = false;
+            },
+
+            /**
+             * Отправить typing
+             * @return {void}
+             */
+            send: function () {
+
+                // ВОТ ТУТ
+                return;
+
+                if (this.block) return;
+
+                var uuid = ocWidget.methods.typing.uuid = ocWidget.tools.randomStr(10);
+                var data = ocWidget.methods.typing.request = {
+                    action: 'typing',
+                    uuid: uuid
+                };
+
+                ocWidget.websocket.send(data);
+
+                this.blockOn();
+            }
+
+        },
+
+        /**
+         * Отправка файла (прикрепить файл или перенести)
+         * @namespace
+         * @type {Object}
+         */
+        fileUpload: {
+
+            opened: false,
+
+            allowedExt: /(jpg|jpeg|gif|png|txt|csv|xls|xlsx|doc|docx|pdf)\b/i,
+
+            file: {name: 'empty'},
+
+            is: {
+                active: false,
+            },
+
+            /**
+             * Показать экран отправки файла
+             * @return {void}
+             */
+            show: function () {
+
+                this.opened = true;
+
+                ocWidget.chat.msg.textarea.reset();
+
+                this.clear();
+
+                RTC(ocWidget.el.widget).addClass('ocWidget-fileupload');
+
+            },
+
+            /**
+             * Скрыть экран отправки файла
+             * @param  {boolean} clear - очистить при скрытии?
+             * @return {void}
+             */
+            hide: function (clear) {
+
+                this.opened = false;
+
+                RTC(ocWidget.el.widget).removeClass('ocWidget-fileupload');
+
+                if (clear) this.clear();
+
+                ocWidget.chat.msg.textarea.resize();
+
+                if (ocWidget.chat.msg.el.msgTextarea.scrollHeight >= 100) {
+                    ocWidget.chat.msg.textarea.maxResize();
+                    ocWidget.tools.scrollToBottom();
+                }
+            },
+
+            /**
+             * ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА ФАЙЛА ИЛИ ИЗОБРАЖЕНИЯ
+             * @param  {object} file - браузерный объект файла
+             * @return {void}
+             */
+            check: function (file) {
+
+                var self = this;
+
+                var form = ocWidget.chat.msg.el.fileUploadForm;
+
+                file = file || form.elements.file1.files[0] || form.elements.file2.files[0];
+                if (file === undefined || this.file.name === file.name || badFile(file)) {
+                    ocWidget.chat.shake();
+                    // self.clear();
+                } else {
+
+                    RTC(ocWidget.el.widget).addClass('ocWidget-fileUploading');
+
+                    ocWidget.chat.msg.el.fileUploadloading.style.transition = 'width .1s ease';
+                    ocWidget.chat.msg.el.fileUploadloading.style.width = '0';
+
+                    ocWidget.chat.msg.el.fileUploadText.innerText = file.name || 'file/image';
+
+                    this.hide();
+
+                    if (form) this.upload(file);
+
+                    this.file.name = file.name;
+
+                }
+
+                function badFile(doc) {
+
+                    var name = doc.name || doc;
+
+                    if (!self.allowedExt.test(name)) {
+                        RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading-success');
+                        RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading-error-size');
+                        ocWidget.chat.shake();
+                        // ocWidget.chat.msg.el.fileUploadTextError.innerText = 'Недопустимый формат файла'
+                        RTC(ocWidget.el.widget).addClass('ocWidget-fileUploading');
+                        RTC(ocWidget.el.widget).addClass('ocWidget-fileUploading-error-ext');
+                        return true;
+                    } else if (doc.size > 5000000) {
+                        RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading-success');
+                        RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading-error-ext');
+                        ocWidget.chat.shake();
+                        // ocWidget.chat.msg.el.fileUploadTextError.innerText = 'Файл превышает размер в 5 МБ'
+                        RTC(ocWidget.el.widget).addClass('ocWidget-fileUploading');
+                        RTC(ocWidget.el.widget).addClass('ocWidget-fileUploading-error-size');
+                        return true;
+                    } else {
+                        self.clear();
+                    }
+
+                    return false;
+
+                }
+
+            },
+
+            /**
+             * HTTP МЕТОД ЗАГРУЗКИ ФАЙЛА ИЛИ ИЗОБРАЖЕНИЯ НА СЕРВЕР
+             * @param  {object} file - браузерный объект файла
+             * @return {void}
+             */
+            upload: function (file) {
+
+                var self = this;
+
+                var xhr = new XMLHttpRequest();
+
+                var data = new FormData();
+
+                data.append("file", file);
+                data.append("projectId", ocWidget.options.projectId);
+                data.append("messengerType", ocWidget.options.channelId);
+                data.append("token", ocWidget.options.settings.token);
+                data.append("sdkVersion", ocWidget.version);
+                data.append("VTB24OnlineId", '4815162342');
+
+                var base64 = /base64/i.test(file) ? '64' : '';
+
+                xhr.open("POST", ocWidget.pathConstructor.getFileStoragePath('upload') + base64, true);
+
+                xhr.onload = xhr.onerror = function () {
+                    if (this.status == 200) {
+                        var resp = JSON.parse(xhr.responseText);
+
+                        if (resp.errors === undefined) {
+
+                            self.is.active = true;
+                            RTC(ocWidget.el.widget).addClass('ocWidget-fileUploading-success');
+
+                            self.file = resp;
+
+                            ocWidget.chat.msg.el.fileUploadInput.value = ocWidget.chat.msg.el.dragndropInput.value = '';
+
+                            setTimeout(self.send.init, 1000);
+
+                        } else {
+                            ocWidget.chat.msg.el.fileUploadTextError.innerText = 'Недопустимый формат файла';
+                            RTC(ocWidget.el.widget).addClass('ocWidget-fileUploading-error-ext');
+                        }
+
+                    } else {
+                        console.log("error " + this.status);
+                        RTC(ocWidget.el.widget).addClass('ocWidget-fileUploading-error');
+                        ocWidget.chat.msg.el.fileUploadloading.style.width = event.loaded;
+                        ocWidget.chat.msg.el.fileUploadloading.style.transition = 'width .1s ease';
+                        setTimeout(function () {
+                            ocWidget.chat.msg.fileUpload.check();
+                        }, 10000);
+
+                    }
+                };
+
+                // обработчик для прогресса загрузки
+                xhr.onprogress = function (event) {
+                    ocWidget.chat.msg.el.fileUploadloading.style.transition = 'width 3s ease';
+                    ocWidget.chat.msg.el.fileUploadloading.style.width = parseInt(event.loaded / event.total * 1000) + 'px';
+                };
+
+                xhr.send(data);
+
+            },
+
+            /**
+             * ПОЛУЧЕНИЕ ТОЧНОГО РАЗМЕРА ФАЙЛА С СЕРВЕРА
+             * @param  {string} imageURL - адрес картинки на fileStorage
+             * @return {void}
+             */
+            getSize: function (imageURL) {
+                var xhr = new XMLHttpRequest();
+                var data = new FormData();
+                data.append("imageName", imageURL);
+                xhr.open("POST", ocWidget.pathConstructor.getFileStoragePath('size'), true);
+                xhr.onload = xhr.onerror = function () {
+                    if (this.status == 200) {
+                        var resp = JSON.parse(xhr.responseText);
+                        if (resp.errors === undefined) {
+                            return resp;
+                        } else {
+                            console.log(resp.errors);
+                        }
+                    } else {
+                        console.log("error " + this.status);
+                        self.getSize(imageURL);
+                    }
+                };
+                xhr.send(data);
+            },
+
+            /**
+             * Отправка файлов / изображений
+             * @namespace
+             * @type {Object}
+             */
+            send: {
+
+                /**
+                 * ОТПРАВКА ФАЙЛА ИЛИ ИЗОБРАЖЕНИЯ - проверка
+                 * @return {void}
+                 */
+                init: function () {
+
+                    var self = ocWidget.chat.msg.fileUpload;
+
+                    if (!self.is.active) return;
+
+                    self.file.data.files[0].media_thumb ?
+                        ocWidget.chat.msg.fileUpload.send.img() :
+                        ocWidget.chat.msg.fileUpload.send.file();
+
+                },
+                /**
+                 * ОТПРАВКА ИЗОБРАЖЕНИЯ
+                 * @return {void}
+                 */
+                img: function () {
+
+                    var self = ocWidget.chat.msg.fileUpload;
+
+                    var date = ocWidget.tools.date();
+
+                    var msgObj = ocWidget.chat.msg.message;
+
+                    var uuid = ocWidget.tools.randomStr(10);
+
+                    var message = RTC().create('div', {
+                        id: uuid,
+                        className: 'ocWidget__message ocWidget-message-loading ocAnimation-fadeIn',
+                        innerHTML: ocWidget.tpls.sentImage({
+                            size: {width: 0, height: 0},
+                            src: self.file.data.files[0].media_thumb,
+                            modal: self.file.data.files[0].media_url,
+                            date: date
+                        })
+                    });
+
+                    ocWidget.tpls.insertInToDom(ocWidget.chat.msg.el.dialog, message);
+
+                    var data = {
+                        type: 2,
+                        uuid: uuid,
+                        media_thumb: self.file.data.files[0].media_thumb,
+                        media_url: self.file.data.files[0].media_url,
+                    };
+
+                    ocWidget.websocket.send({
+                        action: 'send_message',
+                        data: data,
+                        uuid: uuid
+                    });
+
+                    msgObj.data = ocWidget.storage.local.get('notDeliveredData') || {};
+
+                    msgObj.messages[uuid] = message;
+
+                    msgObj.data[uuid] = data;
+
+                    ocWidget.storage.local.set('notDeliveredData', msgObj.data);
+
+                    msgObj.timeout[uuid] = setTimeout(function () {
+
+                        RTC(msgObj.messages[uuid]).addClass('ocWidget-message-error');
+
+                        ocWidget.tools.scrollToBottom()
+                    }, 20000);
+
+                    RTC(document).trigger('ocwidget.chatSendMessage');
+
+                    self.clear();
+                    ocWidget.tools.scrollToBottom();
+
+                },
+
+                /**
+                 * ОТПРАВКА ФАЙЛА
+                 * @return {void}
+                 */
+                file: function () {
+
+                    var self = ocWidget.chat.msg.fileUpload;
+
+                    var date = ocWidget.tools.date();
+
+                    var msgObj = ocWidget.chat.msg.message;
+
+                    var uuid = ocWidget.tools.randomStr(10);
+
+                    var message = RTC().create('div', {
+                        id: uuid,
+                        className: 'ocWidget__message ocWidget-message-loading ocAnimation-fadeIn',
+                        innerHTML: ocWidget.tpls.sentDoc({
+                            file: {
+                                name: 'Файл',
+                                type: 'Файл',
+                                href: self.file.data.files[0].media_url
+                            },
+                            date: date
+                        })
+                    });
+
+                    ocWidget.chat.msg.el.dialog.appendChild(message);
+
+                    var data = {
+                        type: 5,
+                        uuid: uuid,
+                        media_url: self.file.data.files[0].media_url
+                    };
+
+                    ocWidget.websocket.send({
+                        action: 'send_message',
+                        data: data,
+                        uuid: uuid
+                    });
+
+                    msgObj.data = ocWidget.storage.local.get('notDeliveredData') || {};
+
+                    msgObj.messages[uuid] = message;
+
+                    msgObj.data[uuid] = data;
+
+                    ocWidget.storage.local.set('notDeliveredData', msgObj.data);
+
+                    msgObj.timeout[uuid] = setTimeout(function () {
+
+                        RTC(msgObj.messages[uuid]).addClass('ocWidget-message-error');
+
+                        ocWidget.tools.scrollToBottom()
+                    }, 20000);
+
+                    RTC(document).trigger('ocwidget.chatSendMessage');
+
+                    self.clear();
+                    ocWidget.tools.scrollToBottom();
+
+                }
+
+            },
+
+            /**
+             * ОЧИСТКА ВСЕХ СОСТОЯНИЙ ПОСЛЕ ОТПРАВКИ
+             * @return {void} [description]
+             */
+            clear: function () {
+                RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading');
+                RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading-success');
+                RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading-error');
+                RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading-error-ext');
+                RTC(ocWidget.el.widget).removeClass('ocWidget-fileUploading-error-size');
+                ocWidget.chat.msg.el.fileUploadText.innerHTML =
+                    ocWidget.chat.msg.el.fileUploadInput.value = ocWidget.chat.msg.el.dragndropInput.value = '';
+
+                ocWidget.chat.msg.fileUpload.file = {name: 'empty'};
+                ocWidget.chat.msg.fileUpload.is.active = false;
+
+                ocWidget.chat.msg.el.fileUploadloading.style.transition = 'width .1s ease';
+                ocWidget.chat.msg.el.fileUploadloading.style.width = 0 + 'px';
+
+            },
+
+        },
+
+        /**
+         * ВСЕ МЕТОДЫ TEXTAREA
+         * @namespace
+         * @type {Object}
+         */
+        textarea: {
+
+            is: {
+                focused: false,
+            },
+
+            lastHeight: 33,
+
+            maxHeight: 200,
+
+            /**
+             * Логика ресайза textarea
+             * @param  {node} textarea - DOM элемент textarea
+             * @return {void}
+             */
+            resize: function (textarea) {
+
+                textarea = textarea || ocWidget.chat.msg.el.msgTextarea;
+
+                var bot = RTC('.ocWidget__chat__bot__msg');
+
+                if (textarea && textarea.scrollHeight >= this.maxHeight && textarea.value !== '' && this.lastHeight !== 33) return;
+
+                textarea.style.height = '33px';
+                textarea.style.height = textarea.scrollHeight >= this.maxHeight ? this.maxHeight + 'px' : textarea.scrollHeight + 'px';
+
+                ocWidget.chat.msg.el.mid.style.bottom = bot.style.height = 45 + textarea.offsetHeight + 'px';
+
+                if (ocWidget.chat.auth.prechats.activeScreen) {
+
+                    ocWidget.chat.msg.el.mid.style.bottom = 0 + 'px';
+
+                } else if (textarea.offsetHeight === 33 || ocWidget.storage.local.get('chat_destroyed') == 'false') {
+
+                    this.reset();
+
+                } else  if (ocWidget.chat.msg.cobrowsing.is.active) {
+
+                    ocWidget.chat.msg.el.mid.style.bottom = 33 + 45 + textarea.offsetHeight + 'px';
+
+                }
+
+                this.lastHeight = textarea.scrollHeight;
+
+                ocWidget.tools.scrollToBottom();
+
+            },
+
+            /**
+             * Сбрасывает JS стиль на textarea
+             * @return {void}
+             */
+            reset: function () {
+                if (ocWidget.chat.msg.el && ocWidget.chat.msg.el.mid)
+                    ocWidget.chat.msg.el.mid.style.bottom = "";
+            },
+
+            /**
+             * Фиксирует максимальный размер textarea
+             * @return {void}
+             */
+            maxResize: function () {
+                ocWidget.chat.msg.el.mid.style.bottom = 45 + ocWidget.chat.msg.textarea.lastHeight + 'px';
+            },
+
+            onfocus: function () {
+                this.is.focused = true;
+            },
+
+            onblur: function () {
+                this.is.focused = false;
+            },
+
+            /**
+             * Коллбек textarea.onInput
+             * @param  {event} e - Объект события браузера
+             * @return {void}
+             */
+            oninput: function (event) {
+                this.block.init(event.target);
+                ocWidget.storage.local.set('send_message', event.target.value);
+                ocWidget.chat.msg.typing.send();
+                ocWidget.chat.msg.textarea.resize(event.target);
+            },
+
+            /**
+             * Методы блокировки textarea (введено слишком много символов)
+             * @namespace
+             * @type {Object}
+             */
+            block: {
+
+                is: {
+                    active: false
+                },
+
+                /**
+                 * Включить или выключить блокировку?
+                 * @param  {node} textarea - DOM элемент textarea
+                 * @return {void}
+                 */
+                init: function (textarea) {
+                    if (textarea.value.length > ocWidget.chat.msg.message.maxLength - 1) {
+                        this.on(textarea);
+                    }
+                    else {
+                        this.off();
+                    }
+                    if (this.is.active) return true;
+                },
+
+                /**
+                 * Включить блокировку
+                 * @param  {node} textarea - DOM элемент textarea
+                 * @return {void}
+                 */
+                on: function (textarea) {
+                    this.is.active = true;
+                    this.slice(textarea);
+                    RTC(ocWidget.el.widget).addClass('ocWidget-textarea-block');
+                },
+
+                /**
+                 * Выключить блокировку
+                 * @return {void}
+                 */
+                off: function () {
+                    if (!this.is.active) return;
+                    this.is.active = false;
+                    RTC(ocWidget.el.widget).removeClass('ocWidget-textarea-block');
+                },
+
+                /**
+                 * Отрезать лишнее количество символов
+                 * @param {node} textarea - DOM элемент textarea
+                 * @return {void}
+                 */
+                slice: function (textarea) {
+                    var text = textarea.value;
+                    text = text.substr(0, ocWidget.chat.msg.message.maxLength);
+                    textarea.value = text;
+                }
+
+            },
+
+            /**
+             * Коллбек textarea.onKeyDown
+             * @param  {event} e - объект события браузера
+             * @return {void}
+             */
+            onkeydown: function (event) {
+                var metakey = window.navigator.platform === 'macos' ? event.metaKey : event.ctrlKey;
+                if (metakey && event.keyCode === 13 && ocWidget.chat.msg.textarea.is.focused) {
+                    if (event.target.value.trim() === '') return false;
+                    var carretPosition = ocWidget.tools.getCursorPosition(event.target);
+                    event.target.value = ocWidget.tools.insertStr(event.target.value, carretPosition.start, '\r\n');
+                    ocWidget.tools.setCursorPosition(event.target, carretPosition.start + 1, carretPosition.start + 1);
+                    ocWidget.chat.msg.textarea.resize(event.target);
+                } else if (event.keyCode === 13 && ocWidget.chat.msg.textarea.is.focused) {
+                    event.preventDefault();
+                    ocWidget.chat.msg.message.send();
+                }
+            },
+
+            /**
+             * Коллбек textarea.onPaste
+             * @param  {event} e - объект события браузера
+             * @return {void}
+             */
+            onpaste: function (event) {
+
+                this.block.init(event.target);
+
+                var items;
+
+                if (ocWidget.options.settings.browser === 'msie') {
+                    items = (window.clipboardData || window.originalEvent.clipboardData).getData('text');
+                }
+                else {
+                    items = (event.clipboardData || event.originalEvent.clipboardData).items;
+                }
+
+                for (var index in items) {
+                    if(items.hasOwnProperty(index)) {
+                        var item = items[index];
+                        if (item.kind === 'file') {
+                            var blob = item.getAsFile();
+                            var reader = new FileReader();
+                            reader.readAsDataURL(blob);
+                            reader.onload = function (e) {
+                                var file = event.target.result;
+                                ocWidget.chat.msg.fileUpload.check(file);
+                            };
+                        }
+                    }
+                }
+                ocWidget.tools.scrollToBottom();
+            },
+
+        }
+
+    },
+
+    /**
+     * CSI
+     * @namespace
+     * @type {Object}
+     */
+    csi: {
+
+        el: {},
+
+        // ОБЪЕКТ - хранит состояние элемента (есть в DOM или нет)
+        is: {
+            opened: false
+        },
+
+        rate: 0,
+
+        /**
+         * Включить CSI
+         * @return {void}
+         */
+        init: function () {
+            ocWidget.chat.msg.textarea.reset();
+
+            ocWidget.chat.msg.hide();
+
+            var photo = ocWidget.auth.operator.agent_photo.split(',');
+            photo = ocWidget.tools.isBase64(photo[1]) ? ocWidget.auth.operator.agent_photo : ocWidget.auth.operator.agent_photo + '?token=' + ocWidget.tools.encodePath(ocWidget.options.settings.token);
+
+            this.el.csiAgentPhoto.src = photo;
+            this.el.csiAgentName.innerHTML = ocWidget.auth.operator.agent_name;
+
+            this.show();
+        },
+
+        /**
+         * Показывает csi
+         * @return {void}
+         */
+        show: function () {
+            ocWidget.websocket.isBlocked = true;
+            this.is.opened = true;
+            ocWidget.chat.is.currentPage = 'csi';
+            RTC(ocWidget.el.widget).addClass('ocWidget-csi');
+        },
+
+        /**
+         * Cкрывает csi
+         * @return {void}
+         */
+        hide: function () {
+            this.is.opened = false;
+            ocWidget.chat.is.currentPage = '';
+            RTC(ocWidget.el.widget).removeClass('ocWidget-csi');
+
+            ocWidget.chat.msg.textarea.reset();
+        },
+
+        /**
+         * Кэширует элементы CSI
+         * @return {void}
+         */
+        cacheElements: function () {
+            this.el = RTC('.ocWidget__chat__mid__csi');
+            this.el.csiStars = [].slice.call(this.el.querySelectorAll('.ocWidget__chat__mid__csi__rank__star-input'));
+
+            this.el.csiAgentPhoto = RTC('.ocWidget__chat__mid__csi__agent-photo img');
+            this.el.csiAgentName = RTC('.ocWidget__chat__mid__csi__agent-name');
+            this.el.csiTextarea = RTC('.ocWidget__chat__bot__csi-textarea');
+
+            this.el.sendRate = RTC('.ocWidget__chat__bot__csi-send');
+
+            this.handlers();
+        },
+
+        /**
+         * Вешает обработчики на csi элементы
+         * @return {void}
+         */
+        handlers: function () {
+            this.el.sendRate.addEventListener('click', ocWidget.chat.csi.sendRate);
+
+            for (var i = 0; i < this.el.csiStars.length; i++) {
+                this.el.csiStars[i].addEventListener('change', ocWidget.chat.csi.starsHandler);
+            }
+
+            this.el.csiTextarea.addEventListener('keydown', function (event) {
+                if (event.keyCode === 13) ocWidget.chat.csi.sendRate();
+            });
+        },
+
+        /**
+         * Обработчик звезд рейтинга
+         * @param  {event} evt - Объект события браузера
+         * @return {void}
+         */
+        starsHandler: function (evt) {
+            var target = evt.target;
+
+            if (target.checked) {
+                var rate = ocWidget.chat.csi.rate = +target.value;
+
+                if (ocWidget.options.behaviour.csiComment) {
+                    if (rate < 4)
+                        ocWidget.chat.csi.showComment();
+                    else {
+                        ocWidget.chat.csi.hideComment();
+                        ocWidget.chat.csi.sendRate(rate);
+                    }
+                } else {
+                    ocWidget.chat.csi.sendRate(rate);
+                }
+            }
+        },
+
+        /**
+         * Показать поле ввода комментария
+         * @return {void}
+         */
+        showComment: function () {
+            RTC(ocWidget.el.widget).addClass('ocWidget-csi-comment');
+        },
+
+        /**
+         * Скрыть поле ввода комментария
+         * @return {void}
+         */
+        hideComment: function () {
+            RTC(ocWidget.el.widget).removeClass('ocWidget-csi-comment');
+        },
+
+        /**
+         * Отправить рейтинг
+         * @param  {number} rate - рейтинг CSI
+         * @return {void}
+         */
+        sendRate: function (rate) {
+            rate = ocWidget.chat.csi.rate || rate;
+
+            var uuid = ocWidget.methods.csi_replay.uuid = ocWidget.tools.randomStr(10);
+            var data = ocWidget.methods.csi_replay.request = {
+                action: 'csi_replay',
+                data: {
+                    rate: rate,
+                    text: ocWidget.chat.csi.el.csiTextarea.value
+                },
+                uuid: uuid
+            };
+
+            ocWidget.websocket.send(data);
+
+            var text = ocWidget.chat.csi.text ? ocWidget.chat.csi.text : 'Спасибо за оценку. <br> Ваше мнение очень важно для нас.';
+            ocWidget.chat.alert.set(text).show();
+
+            ocWidget.chat.csi.hideComment();
+
+            for (var i = 1; i <= ocWidget.chat.csi.el.csiStars.length; i++) {
+                ocWidget.chat.csi.el.csiStars[i - 1].checked = false;
+            }
+
+            ocWidget.chat.csi.el.csiTextarea.value = '';
+
+            //timeout to keep the last csi screen visible
+            setTimeout(function () {
+                ocWidget.websocket.isBlocked = false;
+                ocWidget.chat.hide();
+                ocWidget.chat.destroy();
+            }, 2000);
+        }
+
+    },
+
+    /**
+     * Логика loading
+     * @namespace
+     * @type {Object}
+     */
+    loading: {
+
+        active: false,
+
+        /**
+         * Показать loading
+         * @return {void}
+         */
+        show: function () {
+            this.active = true;
+            RTC(ocWidget.el.widget).addClass('ocWidget-loading');
+        },
+        /**
+         * Скрыть loading
+         * @return {void}
+         */
+        hide: function () {
+            this.active = false;
+            RTC(ocWidget.el.widget).removeClass('ocWidget-loading');
+        }
+
+    },
+
+    /**
+     * Логика оффлайн (отсутствие операторов)
+     * @namespace
+     * @type {Object}
+     */
+    offline: {
+
+        active: false,
+
+        els: {},
+
+        /**
+         * Показать экран НАС НЕТ ОНЛАЙН
+         * @param  {boolean} showHistory - дать возможность посмотреть историю ?
+         * @return {void}
+         */
+        show: function (showHistory) {
+            this.active = true;
+            if (ocWidget.render.is.rendered && ocWidget.chat.msg.el && ocWidget.chat.msg.el.mid){
+                ocWidget.chat.msg.el.mid.style.bottom = "";
+            }
+            ocWidget.tpls.channels.changeBySkillInOfflineScreen();
+
+            this.setTexts(ocWidget.tpls.offline.labels);
+
+            RTC(ocWidget.el.widget).addClass('ocWidget-offline');
+            if (showHistory) {
+                ocWidget.chat.msg.textarea.reset();
+                RTC(ocWidget.el.widget).addClass('ocWidget-offline-history');
+                // ocWidget.tools.scrollToBottom('toEnd');
+            }
+        },
+
+        showWithPrechat: function(activeSkill){
+
+            var textData = {
+                    text: activeSkill.alias_disclaimer ? activeSkill.alias_disclaimer : ocWidget.options.behaviour.messageLcr
+                },
+                skillsIDs = activeSkill.channels;
+
+            RTC(ocWidget.el.widget).addClass('ocWidget-offline-with-prechat');
+
+            // передать список id каналов для выбранной группы
+            ocWidget.tpls.channels.changeBySkillInOfflineScreen(skillsIDs);
+
+            this.setTexts(textData);
+        },
+
+        /**
+         * Скрыть экран НАС НЕТ ОНЛАЙН
+         * @return {void}
+         */
+        hide: function () {
+            this.active = false;
+            RTC(ocWidget.el.widget).removeClass('ocWidget-offline');
+            RTC(ocWidget.el.widget).removeClass('ocWidget-offline-block');
+            RTC(ocWidget.el.widget).removeClass('ocWidget-offline-showHistory');
+            RTC(ocWidget.el.widget).removeClass('ocWidget-offline-with-prechat');
+            if (ocWidget.chat.is.rendered) {
+                ocWidget.chat.msg.textarea.resize();
+            }
+        },
+
+        /**
+         * Заблокировать только textarea
+         * @return {void}
+         */
+        block: function () {
+            this.active = true;
+            RTC(ocWidget.el.widget).addClass('ocWidget-offline-block');
+        },
+
+        /**
+         * Показать кнопку "показать историю"
+         * @return {void}
+         */
+        showHistory: function () {
+            // для второго экрана пречата
+            if(ocWidget.chat.auth.prechats.activeScreen === "secondary") {
+                RTC(ocWidget.el.widget).removeClass('ocWidget-auth-secondary');
+            }
+
+            RTC(ocWidget.el.widget).addClass('ocWidget-offline-showHistory');
+            ocWidget.el.chat.addEventListener('mouseleave', this.hideHistory)
+        },
+
+        /**
+         * Скрыть кнопку "показать историю"
+         * @return {void}
+         */
+        hideHistory: function () {
+          // для второго экрана пречата
+          if(ocWidget.chat.auth.prechats.activeScreen === "secondary") {
+              RTC(ocWidget.el.widget).addClass('ocWidget-auth-secondary');
+          }
+
+            RTC(ocWidget.el.widget).removeClass('ocWidget-offline-showHistory');
+            ocWidget.el.chat.removeEventListener('mouseleave', this.hideHistory)
+        },
+
+        cacheElements: function () {
+            this.els.heading = RTC('.ocWidget__chat__mid__offline--block-heading');
+            this.els.text = RTC('.ocWidget__chat__mid__offline--block-text');
+            this.els.showHistory = RTC('.ocWidget__chat__mid__offline-showHistory');
+        },
+
+        setTexts: function(data){
+            for(key in data){
+                if(data.hasOwnProperty(key)) {
+                    if(this.els[key]){
+                        this.els[key].innerHTML = data[key];
+                    }
+                }
+            }
+        }
+
+    },
+
+    /**
+     * ВСЯ ЛОГИКА ШАРИНГА
+     * @namespace
+     * @type {Object}
+     */
+    screenSharing: {
+
+        room: 0,
+
+        user: 0,
+
+        current: '',
+
+        active: false,
+
+        /**
+         * Включить шаринг
+         * @param  {string} room - ключ комнаты
+         * @param  {string} user - id юзера
+         * @return {void}
+         */
+        init: function (room, user) {
+            var self = this;
+
+            this.room = room;
+            this.user = user;
+
+            // Если нужно открыть шаринг в новой вкладке - поставить true
+            if (false)
+                window.open(ocWidget.options.paths.httpProtocol + ocWidget.options.paths.sharing_url + '?user=' + user + '&room=' + room);
+            else {
+
+                window.addEventListener('resize', self.refresh);
+                window.addEventListener('keyup', self.close);
+                window.addEventListener('message', self.destroy);
+
+                this.show({room: room, user: user});
+
+            }
+        },
+
+        /**
+         * Коллбек при window.onResize
+         * @param  {event} e - Объект события браузера
+         * @return {void}
+         */
+        refresh: function (event) {
+            var content = RTC('.screenSharing-content');
+            content.style.left = 'calc(40% - ' + content.offsetWidth / 2 + 'px)';
+            content.style.top = 'calc(50% - ' + content.offsetHeight / 2 + 'px)';
+        },
+
+        /**
+         * Закрыть шаринг по клику ESC
+         * @param  {event} e - Объект события браузера
+         * @return {void}
+         */
+        close: function (event) {
+            if (event.keyCode === 27 && ocWidget.chat.screenSharing.active)
+                ocWidget.chat.screenSharing.destroy({data: 'sharing close'});
+        },
+
+        /**
+         * Снять обработчики и закрыть шаринг (вызывается через this.close и из HTML элемента)
+         * @param  {object} data - объект из iframe.postMessage или из HTML элемента
+         * @return {void}
+         */
+        destroy: function (data) {
+
+            if (data.data !== 'sharing close') return;
+
+            var self = this;
+
+            window.removeEventListener('resize', self.refresh);
+            window.removeEventListener('keyup', self.close);
+            window.removeEventListener('message', self.destroy);
+
+            ocWidget.chat.screenSharing.hide();
+        },
+
+        /**
+         * Отрисовать модальное окно с шаригом в DOM
+         * @param  {object} data - содержит room и user
+         * @return {void}
+         */
+        show: function (data) {
+
+            this.active = true;
+
+            var screenSharing = RTC().create('div', {
+                className: 'ocWidget-screenSharing',
+                innerHTML: ocWidget.tpls.screenSharing({
+                    width: ocWidget.tools.winWidth,
+                    height: ocWidget.tools.winHeight,
+                    room: data.room,
+                    user: data.user
+                })
+            });
+
+            ocWidget.tpls.insertInToDom(document.body, screenSharing);
+            //document.body.appendChild(screenSharing);
+
+            var content = RTC('.screenSharing-content');
+
+            content.style.height = content.offsetHeight - 80 + 'px';
+            content.style.left = 'calc(40% - ' + content.offsetWidth / 2 + 'px)';
+            content.style.top = 'calc(50% - ' + content.offsetHeight / 2 + 'px)';
+
+            this.current = screenSharing;
+
+            RTC(this.current).addClass('ocWidget-screenSharing-show');
+        },
+
+        /**
+         * Удалить модальное окно с шаригом из DOM
+         * @param  {noce} el - DOM элемент
+         * @return {void}
+         */
+        hide: function (el) {
+            this.active = false;
+            el = el || ocWidget.chat.screenSharing.current;
+            document.body.removeChild(el);
+        }
+
+    },
+
+    /**
+     * Логика отображения виджета на мобильных устройствах
+     * @namespace
+     * @type {Object}
+     */
+    mobileVersion: {
+
+        storage: {
+
+            bodyStyles: '',
+
+            metaContent: ''
+
+        },
+
+        active: false,
+
+        on: function () {
+
+            RTC('.ocWidget__chat').removeAttribute('style');
+
+            if (this.active) return;
+
+            this.changeMeta('on');
+
+            RTC(document.documentElement).addClass('ocWidget_mobile');
+
+            this.setBodyStyles();
+
+            this.active = true;
+        },
+
+        off: function () {
+
+            if (!this.active) return;
+
+            this.changeMeta('off');
+
+            RTC(document.documentElement).removeClass('ocWidget_mobile');
+
+            this.resetBodyStyles();
+
+            this.active = false;
+        },
+
+        changeMeta: function (status) {
+            var metaViewportEl = document.querySelector('meta[name="viewport"]'),
+                metaContent = status != 'on' || !metaViewportEl ? '' : metaViewportEl.getAttribute('content');
+
+            if (status == 'on') {
+
+                if(!metaViewportEl){
+                    document.querySelector('head').innerHTML += '<meta content="" name="viewport">';
+                    metaViewportEl = document.querySelector('meta[name="viewport"]')
+                }
+
+                this.storage.metaContent = metaContent;
+                metaViewportEl.setAttribute('content', 'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=0');
+
+            } else if (status == 'off') {
+
+                if (this.storage.metaContent) {
+                    metaViewportEl.setAttribute('content', this.storage.metaContent);
+                    this.storage.metaContent = '';
+                } else {
+                    metaViewportEl.remove();
+                }
+
+            }
+
+        },
+
+        setBodyStyles: function () {
+            this.storage.bodyStyles = document.body.getAttribute('style') || '';
+            document.body.setAttribute('style', 'position:fixed;top:0;left:0;right:0;bottom:0;');
+        },
+
+        resetBodyStyles: function () {
+
+            if (this.storage.bodyStyles.length)
+                document.body.setAttribute('style', this.storage.bodyStyles);
+            else
+                document.body.removeAttribute('style');
+
+        },
+
+        /**
+         * Логика поведения блокирующего окна "поверните устройство" при изменении ориентации устройства с учетом виртуальной клавиатуры
+         * @namespace
+         * @type {Object}
+         */
+        horizontalLock: {
+
+            // сохраненный обработчик страницы для window.onresize
+            functionStore: false,
+
+            // элемент с фокусом
+            inputFocused: false,
+
+            active: false,
+
+            inputs: {},
+
+            winHeight: 0,
+
+            winWidth: 0,
+
+            init: function () {
+                var self = this;
+                if (this.active === true) {
+                    return;
+                }
+                this.active = true;
+                this.inputs = document.querySelectorAll('#ocWidget input, #ocWidget textarea');
+                self.saveWinSize();
+
+                /*
+                 * Если страница перезагружена, когда клавиатура была открыта,
+                 * изначально будет "пойман" меньший размер экрана
+                 */
+                setTimeout(function () {
+                    self.checkOrientation();
+                }, 600);
+
+                self.addEventsListener(this.inputs);
+
+            },
+
+            checkOrientation: function () {
+                var isOpenedInLandscape = (this.winHeight == window.innerHeight && this.winWidth == window.innerWidth) && (window.innerHeight < window.innerWidth),
+                    isRotatedToLandscape = this.winWidth < window.innerWidth;
+
+                if (isOpenedInLandscape || isRotatedToLandscape) {
+                    this.showLock();
+                    // скрытие экранной клавиатуры устройства
+                    this.hideVirtualKeyboard();
+                } else {
+                    
+                    // если resize вызван движением виртуальной клавиатуры устройства
+                    if (this.winWidth == window.innerWidth && this.winHeight > window.innerHeight) {
+                        return;
+                    }
+                    this.hideLock();
+                }
+
+                this.saveWinSize();
+            },
+
+            showLock: function () {
+                RTC(ocWidget.el.widget).addClass('mobile_horizontal_lock');
+            },
+
+            hideLock: function () {
+                RTC(ocWidget.el.widget).removeClass('mobile_horizontal_lock');
+            },
+
+            addEventsListener: function (els) {
+                var self = this;
+                [].forEach.call(els, function (el) {
+                    el.onfocus = function () {
+                        self.inputFocus = true;
+                    }
+                    el.onblur = function () {
+                        self.inputFocus = false;
+                    }
+                });
+
+                self.functionStore = window.onresize;
+                window.onresize = function () {
+                    self.checkOrientation();
+                    self.saveWinSize();
+                };
+            },
+
+            removeEventsListener: function (els) {
+                var self = this;
+                [].forEach.call(els, function (el) {
+                    el.onfocus = false;
+                    el.onblur = false;
+                });
+
+                window.onresize = this.functionStore;
+                this.functionStore = false;
+            },
+
+            hideVirtualKeyboard: function () {
+                [].forEach.call(this.inputs, function (el) {
+                    el.blur();
+                });
+            },
+
+            saveWinSize: function () {
+                this.winHeight = window.innerHeight;
+                this.winWidth = window.innerWidth;
+            },
+
+            destroy: function () {
+                this.removeEventsListener(this.inputs);
+                this.active = false;
+            }
+        }
+
+    }
+
+};

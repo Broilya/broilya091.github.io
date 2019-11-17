@@ -1,0 +1,140 @@
+/**
+ * @file ХРАНЕНИЕ СЕССИИ НА КЛИЕНТЕ - МЕТОДЫ РАБОТЫ С LOCALSTORAGE
+ */
+
+ocWidget.storage = {
+
+    session: {
+        set: function (name, value) {
+            var type = typeof value;
+
+            if (type === 'object') value = JSON.stringify(value);
+            sessionStorage['ocWidget_' + name] = value;
+            sessionStorage['ocWidget_' + name + '_type'] = type;
+        },
+
+        get: function (name) {
+            if (sessionStorage['ocWidget_' + name] !== undefined) {
+                return (sessionStorage['ocWidget_' + name + '_type'] === 'object' ?
+                    JSON.parse(sessionStorage['ocWidget_' + name]) :
+                    sessionStorage['ocWidget_' + name]);
+            } else {
+                return undefined;
+            }
+        },
+
+        remove: function (name) {
+            delete sessionStorage['ocWidget_' + name];
+            delete sessionStorage['ocWidget_' + name + '_type'];
+        },
+
+        reset: function () {
+            ocWidget.storage.session.remove('co_request');
+        },
+    },
+
+    local: {
+        set: function (name, value) {
+            var type = typeof value;
+            if (type === 'object') value = JSON.stringify(value);
+            localStorage['ocWidget_' + name] = value;
+            localStorage['ocWidget_' + name + '_type'] = type;
+        },
+
+        get: function (name) {
+            if (localStorage['ocWidget_' + name] !== undefined) {
+                return (localStorage['ocWidget_' + name + '_type'] === 'object' ?
+                    JSON.parse(localStorage['ocWidget_' + name]) :
+                    localStorage['ocWidget_' + name]);
+            } else {
+                return undefined;
+            }
+        },
+
+        remove: function (name) {
+            delete localStorage['ocWidget_' + name];
+            delete localStorage['ocWidget_' + name + '_type'];
+        },
+
+        reset: function () {
+            ocWidget.storage.local.remove('token');
+            ocWidget.storage.local.remove('sessionCode');
+            ocWidget.storage.local.remove('chat_state');
+            ocWidget.storage.local.remove('notDeliveredData');
+            ocWidget.storage.local.remove('LastMessage');
+            ocWidget.storage.local.remove('operator');
+            ocWidget.storage.local.remove('client-info');
+            ocWidget.storage.local.remove('auth-login');
+            ocWidget.storage.local.remove('unreadMessages');
+            ocWidget.storage.local.remove('unreadBarMessages');
+            ocWidget.storage.local.remove('messengerType');
+            ocWidget.storage.local.remove('barTimerDone');
+            ocWidget.storage.local.remove('TimerTime');
+        },
+    },
+
+    // ВЫЗОВ ОПРЕДЕЛЕННОГО МЕТОДА СТОРАДЖ (из описанных ниже) - ЗАВИСИТ ОТ того, что поменяли/записали в сторадж
+    listen: function (evt) {
+
+        if (ocWidget.options.settings.browser === 'msie') return;
+
+        var data = {
+            old: evt.oldValue,
+            new: evt.newValue
+        };
+        // todo
+        var target = evt.key;
+
+
+        if (target === 'ocWidget_chat_position' || target === 'ocWidget_chat_state' || target === 'ocWidget_send_message') ocWidget.storage[target](data);
+    },
+
+    // МЕТОД - для сохранения координат чата относительно окна (срабатывает при dragndrop)
+    ocWidget_chat_position: function (data) {
+
+        return;
+
+        var pos = JSON.parse(data.new);
+
+        if (ocWidget.storage.local.get('chat_position')) {
+            ocWidget.dragndrop.el.style.left = ocWidget.storage.local.get('chat_position').X + 'px';
+            ocWidget.dragndrop.el.style.top = ocWidget.storage.local.get('chat_position').Y + 'px';
+        }
+        return false;
+
+    },
+
+    // МЕТОД - для сохранения состояния чата (открыт / закрыт)
+    ocWidget_chat_state: function (data) {
+
+        if (data.new === 'opened') {
+            ocWidget.chat.show();
+        } else if (data.new === 'closed')
+            ocWidget.chat.hide();
+
+    },
+
+    ocWidget_chat_online: function (data) {
+        // alert(ocwidget.storage.chat_online);
+    },
+
+    // МЕТОД - для обработки исходящего сообщения - отрисовка сообщения в ленте
+    ocWidget_send_message: function (data) {
+        ocWidget.chat.msg.el.msgTextarea.value = data.new;
+        ocWidget.chat.msg.el.msgTextarea.blur();
+    },
+
+    // МЕТОД - для обработки входящего сообщения - отрисовка сообщения в ленте
+    chat_message: function (data) {
+
+    },
+
+    chat_agents: function (data) {
+
+    },
+
+    chat_page: function (data) {
+
+    }
+
+};

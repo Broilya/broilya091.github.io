@@ -1,0 +1,415 @@
+/**
+ * @file ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+ */
+
+/**
+ * ЧАСТО ИСПОЛЬЗУЕМЫЕ / ОБЩИЕ ФУНКЦИИ
+ * @namespace
+ * @type {Object}
+ */
+ocWidget.tools = {
+
+    scrollDir: null,
+    scrollTop: 0,
+    scrollLeft: 0,
+    scrollBottom: 0,
+    winWidth: 0,
+    winHeight: 0,
+    /**
+     *  Создать акутальную дату для входящих/исходящих сообщений
+     * @param  {number} time  - время с сервера
+     * @param  {number} agent - id агента
+     * @return {string}       - дата в формате [ВЫ {ЧИСЛО} {МЕСЯЦА} В {ВРЕМЯ С СЕРВЕРА}]
+     */
+    date: function (time, agent) {
+
+        time = time || Date.now();
+
+        var date = new Date(time);
+
+        var months = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря']
+
+        date.hours = date.getHours() < 10 ? '0' + date.getHours() : date.getHours();
+        date.minutes = date.getMinutes() < 10 ? '0' + date.getMinutes() : date.getMinutes();
+
+        var user = agent ? agent === 'operator' ?
+            ocWidget.auth.operator.agent_name :
+            agent === 'not' ?
+                '' : ocWidget.auth.operator[agent] ?
+                ocWidget.auth.operator[agent].agent_name :
+                ocWidget.auth.operator.agent_name : 'Вы';
+
+        date = user + ' ' + date.getDate() + ' ' + months[date.getMonth()] + ' в ' + date.hours + ':' + date.minutes;
+
+        return date;
+
+    },
+
+    /**
+     * Установить позицию курсора
+     * @param {node} elem  - элемент textarea
+     * @param {number} start - начало выделения
+     * @param {number} end   - конец выделения
+     */
+    setCursorPosition: function (elem, start, end) {
+
+        elem.focus();
+
+        if (elem.setSelectionRange) elem.setSelectionRange(start, end);
+
+        else if (elem.createTextRange) {
+
+            var range = elem.createTextRange();
+
+            range.collapse(true);
+
+            range.moveEnd("character", end);
+
+            range.moveStart("character", start);
+
+            range.select();
+        }
+
+    },
+    /**
+     * Получить позицию курсора
+     * @param  {node} ctrl - элемент textarea
+     * @return {Object}        - содержит start(начало выделения) и end(конец выделения)
+     */
+    getCursorPosition: function (ctrl) {
+
+        if (document.selection) {// IE < 9 Support
+            ctrl.focus();
+            var range = document.selection.createRange();
+            var rangelen = range.text.length;
+            range.moveStart('character', -ctrl.value.length);
+            var start = range.text.length - rangelen;
+            return {'start': start, 'end': start + rangelen};
+        } else if (ctrl.selectionStart || ctrl.selectionStart == '0') { // IE >=9 and other browsers
+            return {'start': ctrl.selectionStart, 'end': ctrl.selectionEnd};
+        } else {
+            return {'start': 0, 'end': 0};
+        }
+    },
+
+    /**
+     * Установить общие обработчики на document/window
+     * @return {void}
+     */
+    handler: function () {
+
+        var that = this;
+
+        this.winWidth = window.innerWidth;
+        this.winHeight = window.innerHeight;
+
+        window.addEventListener('resize', function () {
+            that.winWidth = window.innerWidth;
+            that.winHeight = window.innerHeight;
+            var position = {
+                clientX: ocWidget.dragndrop.coords.left,
+                clientY: ocWidget.dragndrop.coords.top
+            };
+            ocWidget.dragndrop.move(position);
+        });
+
+        window.addEventListener('scroll', function () {
+            var scrollTop = window.scrollTop;
+            var scrolLeft = window.scrollLeft;
+
+            that.scrollDir = that.scrollTop - scrollTop > 0 ? 'up' : 'down';
+            that.scrollTop = scrollTop > 0 ? scrollTop : 0;
+            that.scrollLeft = scrolLeft > 0 ? scrolLeft : 0;
+            that.scrollBottom = scrollTop + that.winHeight;
+        });
+
+        window.addEventListener('storage', ocWidget.storage.listen);
+
+        window.addEventListener("online", ocWidget.websocket.onOnline);
+
+        window.addEventListener("offline", ocWidget.websocket.onOffline);
+    },
+
+    /**
+     * Создать рандомную сткроку
+     * @param  {number} length - длина строки
+     * @return {void}
+     */
+    randomStr: function (length) {
+        var text = "";
+        var possible = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        for (var i = 0; i < length; i++)
+            text += possible.charAt(Math.floor(Math.random() * possible.length));
+
+        return text;
+    },
+
+    /**
+     * Создать рандомное число
+     * @param  {number} length - длина числа
+     * @return {void}
+     */
+    randomNum: function (length) {
+        var text = "";
+        var possible = "0123456789";
+        for (var i = 0; i < length; i++)
+            text += possible.charAt(Math.floor(Math.random() * possible.length));
+
+        return text;
+    },
+
+    /**
+     * Создать из текста СМАЙЛЫ/ССЫЛКИ
+     * @param  {string} text - текст
+     * @return {string}      - текст с преобразованными в HTML тега
+     */
+    textIntoHtml: function (text) {
+
+        if (text == null || text == undefined) return text;
+
+        var result = text.replace(ocWidget.emoji_codes, emojiToHTML);
+
+        function emojiToHTML(icon) {
+            return (ocWidget.emoji_symbol[icon] !== undefined) ? '<img data-code="' + icon + '" src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7" draggable="false" class="emoji code' + ocWidget.emoji_symbol[icon] + '">' : '';
+        }
+
+        var regxUrl = /((?:mailto:)|(?:(?:(?:https?)|(?:ftps?)):\/\/))?((?:[-а-яa-z0-9_]{2,256}[@.])+(?:(aero|asia|biz|cat|com|coop|edu|gov|info|int|jobs|mil|mobi|museum|name|net|org|pro|tel|travel|tech|ac|ad|ae|af|ag|ai|al|am|an|ao|aq|ar|as|at|au|aw|ax|az|ba|bb|bd|be|bf|bg|bh|bi|bj|bm|bn|bo|br|bs|bt|bv|bw|by|bz|ca|cc|cd|cf|cg|ch|ci|ck|cl|cm|cn|co|cr|ct|cu|cv|cx|cy|cz|cz|de|dj|dk|dm|do|dz|ec|ee|eg|er|es|et|eu|fi|fj|fk|fm|fo|fr|ga|gb|gd|ge|gf|gg|gh|gi|gl|gm|gn|gp|gq|gr|group|gs|gt|gu|gw|gy|hk|hm|hn|hr|ht|hu|id|ie|il|im|in|io|iq|ir|is|it|je|jm|jo|jp|ke|kg|kh|ki|km|kn|kp|kr|kw|ky|kz|la|lb|lc|li|lk|lr|ls|lt|lu|lv|ly|ma|mc|md|me|mg|mh|mk|ml|mn|mn|mo|mp|mr|ms|mt|mu|mv|mw|mx|my|mz|na|nc|ne|nf|ng|ni|nl|no|np|nr|nu|nz|nom|pa|pe|pf|pg|ph|pk|pl|pm|pn|pr|ps|pt|pw|py|qa|re|ra|rs|ru|rw|sa|sb|sc|sd|se|sg|sh|si|sj|sj|sk|sl|sm|sn|so|sr|st|su|sv|sy|sz|tc|td|tf|tg|th|tj|tk|tl|tm|tn|to|tp|tr|tt|tv|tw|tz|ua|ug|uk|us|uy|uz|va|vc|ve|vg|vi|vn|vu|wf|ws|ye|yt|yu|za|zm|zw|arpa|рф)))(\/[-а-яa-z0-9_,.#&?+=/]*)*/gi;
+        var regxIp = /(?:https?:\/\/)?(\d{1,3}\.){3}\d{1,3}(:\d{1,4})?(\/[-а-яa-z0-9_.#&?+=/]*)*/gi;
+
+        result = result.replace(/\r?\n/g, '<br>');
+        result = result.replace(/(<br>){3,}/g, '<br>');
+        result = result.replace(/(&lt;br&gt;){3,}/g, '<br>');
+
+        result = result.replace(regxUrl, createLinksInText);
+        result = result.replace(regxIp, createLinksInText);
+
+        function createLinksInText(src) {
+
+            src = src.trim();
+
+            var href = /https?:\/\//i.test(src) ? src : /mailto:/i.test(src) ? src : /@/.test(src) ? 'mailto:' + src : 'http://' + src;
+
+            var target = /mailto:/.test(href) ? '' : 'target=_blank';
+
+            var link = "<a " + target + " href=" + href + ">" + src + "</a>";
+
+            return link;
+
+        }
+
+        return result;
+
+
+    },
+
+    /**
+     * Вставить строку в строку
+     * @param  {string} str    - основная строка
+     * @param  {number} pos    - вставить с этого места
+     * @param  {string} insert - вставляемая строка
+     * @return {string}        - преобразованная строка
+     */
+    insertStr: function (str, pos, insert) {
+
+        var beforeSubStr = str.substring(0, pos);
+
+        var afterSubStr = str.substring(pos, str.length);
+
+        return beforeSubStr + insert + afterSubStr;
+
+    },
+
+    scrollTimeout: 0,
+
+    /**
+     * Прокрутить экран с сообщениями вниз
+     * @param  {number|array} scrollTo - прокрутить до
+     * @return {void}
+     */
+    scrollToBottom: function (scrollTo) {
+
+        var el = ocWidget.chat.msg.el.dialog,
+            mid = RTC('.ocWidget__chat__mid__msg'),
+            messages = mid.children.length;
+
+        if (!mid.children.length) return;
+
+        if ((el.scrollHeight - el.scrollTop <=
+            el.clientHeight + mid.children[messages - 1].scrollHeight + 50) ||
+            el.scrollTop === 0 || scrollTo) {
+
+             var height = (el.scrollTop === 0 || scrollTo === undefined || scrollTo === 'toEnd') ? el.scrollHeight * 1000 : scrollTo;
+
+            el.scrollTop += height;
+
+        }
+    },
+
+    /**
+     * Прокручивает при открытии до первого непрочитанного сообщения
+     * @param  {number} unreadMsgs - количество непрочитанных сообщений
+     * @return {number}            - сумма высот всех непрочитанных сообщений
+     */
+    unreadScroll: function (unreadMsgs) {
+
+        var mid = RTC('.ocWidget__chat__mid__msg'),
+            messages = mid.children.length,
+            unread = messages - unreadMsgs;
+
+        var unreadHeight = mid.children[unread].scrollHeight;
+
+        return unreadHeight;
+
+    },
+
+    /**
+     * Метод для вырезания недопустимых символов
+     * Используется для подготовки строки перед отправкой в сообщении по сокету
+     * @param (string) str текст сообщения
+     * @returns {string} очишеная строка
+     */
+    cutIllegalCharacters: function (str) {
+        // настраиваемый список допустимых символов (необходимо вынести с константы)
+        var regCustom = '£€$₽¢°¶·√÷×Δ✔';
+
+        // основной список допустимых символов
+        var regMain = '0-9A-Za-zА-Яа-я \"\-,.;:!?\r\n\/';
+
+        var fullRegular = new RegExp("[" + regMain + regCustom + "]", 'g');
+
+        var str = str.match(fullRegular);
+
+        // объединение массива совпадений, если непустая строка и больше одного элемента в массиве
+        var str = str ? (str.length > 1 ? str.join('') : str[0]) : '';
+
+        return str;
+    },
+
+    /**
+     * Преобразование символов в Escape-последовательности
+     * @param str
+     * @returns {string}
+     */
+    escapeCharacters: function (str) {
+        var entityMap = {
+            '&': '&amp;',
+            '<': '&lt;',
+            '>': '&gt;',
+            '"': '&quot;',
+            "'": '&#39;',
+            '/': '&#x2F;',
+            '`': '&#x60;',
+            '=': '&#x3D;'
+        };
+
+        return String(str).replace(/[<>]/g, function (s) { //[&<>"'`=\/]
+            return entityMap[s];
+        });
+    },
+
+    /**
+     * Возвращает переданную строку с первой заглавной буквой
+     * @param string
+     * @returns {string}
+     */
+    capitalizeFirstLetter: function (string) {
+        return string.charAt(0).toUpperCase() + string.slice(1);
+    },
+
+    objectAssign: function(target, firstSource) {
+      'use strict';
+      if (target === undefined || target === null) {
+        throw new TypeError('Cannot convert first argument to object');
+      }
+
+      var to = Object(target);
+      for (var i = 1; i < arguments.length; i++) {
+        var nextSource = arguments[i];
+        if (nextSource === undefined || nextSource === null) {
+          continue;
+        }
+
+        var keysArray = Object.keys(Object(nextSource));
+        for (var nextIndex = 0, len = keysArray.length; nextIndex < len; nextIndex++) {
+          var nextKey = keysArray[nextIndex];
+          var desc = Object.getOwnPropertyDescriptor(nextSource, nextKey);
+          if (desc !== undefined && desc.enumerable) {
+            to[nextKey] = nextSource[nextKey];
+          }
+        }
+      }
+      return to;
+    },
+
+    /**
+     * Метод добавлят одного обработчика для нескольких событий
+     * Используется для мониторинга активности пользователя с целью рвать не нужные
+     * соединения по вебсокету
+     * @param {HTMLElement} el - элемент, на который вешается обработчик
+     * @param {String} s - строка с именами событий, разделенными пробелом
+     * @param {Function} fn - функция-обработчик
+     * @returns {void}
+     */
+    addEventListeners: function (el, s, fn) {
+        s.split(' ').forEach(function(e) {
+            el.addEventListener(e, fn, false);
+        });
+    },
+
+    /**
+     * Метод замедляет вызов обработчиков. Обработчик каждого нового вызова события
+     * перезаисывает вызов предыдущего. Это полезно для событий
+     * типа mousemove. Браузер генерирует десятки и сотни таких событий
+     * за короткий промежуток времени и вызывать обработчик на каждое накладно.
+     * Например, мышь двигалась секунду. delay = 1000. За это время сгенерились 50 событий.
+     * Вместо вызова обработчика 50 раз мы вызываем его 1 раз.
+     * @param {HTMLElement} func - функция-обработчик события
+     * @param {Number} delay - длительность замедления
+     * @returns {Function} - обертка, замедляющая вызов обработчика
+     */
+     debounce: function(func, delay) {
+       var timer = null;
+       return function() {
+         var self = this, args = arguments;
+         var onComplete = function() {
+           ocWidget.websocket.isOnHold = false;
+           func.apply(self, args);
+           timer = null;
+         };
+         ocWidget.websocket.isOnHold = true;
+         if (timer) {
+             clearTimeout(timer);
+         }
+         timer = setTimeout(onComplete, delay);
+       };
+     },
+
+     encodePath: function (str) {
+        return encodeURIComponent(ocWidget.tools.escapeCharacters(str));
+     },
+
+     isBase64: function (str) {
+        try {
+            return btoa(atob(str)) == str;
+        } catch (err) {
+            return false;
+        }
+    },
+
+    /**
+     * Валидация строки селектора
+     * @param {String} selector - строка селектора
+     * @returns {Boolean} - результат проверки
+     */
+    isSelectorValid: function(selector) {
+        if (typeof selector !== 'string') {
+            return false;
+        }
+        try {
+            ocWidget.el.widget.querySelector(selector);
+        } catch (e) {
+            return false;
+        }
+        return true;
+    }
+};

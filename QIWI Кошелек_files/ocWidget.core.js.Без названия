@@ -1,0 +1,476 @@
+/**
+ * @file ВЗАИМОДЕЙСТВИЕ ПО HTTP - Содержит методы INIT, AUTH и RENDER
+ */
+
+/**
+ * ОСНОВНОЙ ОБЪЕКТ
+ * @namespace ocWidget
+ * @type {Object}
+ */
+ocWidget = {
+
+    /**
+     * ВЕРСИЯ
+     * @type {string}
+     */
+    version: ocWidget.version,
+
+    /**
+     * Хранит в себе закэшированные DOM элементы ocWidget.el.bar ocWidget.el.chat
+     * @type {Object}
+     */
+    el: {},
+
+    /**
+     * Сохраненные WS пакеты для того,
+     * чтобы повторять запросы с абсолютно теми же параметрами - при ошибках требующих повторной отправки
+     * @type {Object}
+     */
+    methods: {
+        auth: {
+            uuid: null,
+            request: {}
+        },
+        history_request: {
+            uuid: null,
+            request: {}
+        },
+        subscribe_unread_counter_update: {
+            uuid: null,
+            request: {}
+        },
+        co_accept: {
+            uuid: null,
+            request: {}
+        },
+        co_deny: {
+            uuid: null,
+            request: {}
+        },
+        typing: {
+            uuid: null,
+            request: {}
+        },
+        csi_replay: {
+            uuid: null,
+            request: {}
+        },
+        message_received: {
+            uuid: null,
+            request: {}
+        }
+    },
+
+    /**
+     * Получение/проверка ТОКЕНА сессии
+     * @namespace
+     * @type {Object}
+     */
+    init: {
+
+        /**
+         * Состояние
+         * @type {Boolean}
+         */
+        isDone: false,
+
+        /**
+         * Запрос токена
+         * @param  {boolean}   again    - выполняется ли повторно?
+         * @param  {Function} callback - коллбек прокидывающийся из ocWidget.init и возвращающийся обратно
+         * @return {void}
+         */
+        start: function (again, callback) {
+
+            if (ocWidget.options.behaviour.debug) {
+                console.log('ocWidget: initialization..');
+            }
+
+            if (ocWidget.storage.local.get('chat_destroyed') == 'true') {
+                ocWidget.storage.local.set('chat_destroyed', false);
+            }
+
+            var channelId = ocWidget.storage.local.get('channelId');
+
+            // При изменении channelId - создание новой сессии.
+            if (ocWidget.options.channelId != channelId){
+                ocWidget.storage.local.reset();
+            }
+
+            // При изменении login - создание новой сессии.
+            if (ocWidget.options.auth.login != ocWidget.storage.local.get('auth-login')){
+                ocWidget.storage.local.reset();
+            }
+
+            // ТОКЕН!
+            ocWidget.options.settings.token = ocWidget.storage.local.get('token');
+
+            var data = {
+                projectId: ocWidget.options.projectId,
+                messengerType: ocWidget.options.channelId,
+                token: encodeURIComponent(ocWidget.options.settings.token),
+                sdkVersion: ocWidget.version
+            };
+
+            RTC().ajax({
+                url: ocWidget.pathConstructor.getCoreInitPath(),
+                type: 'POST',
+                dataType: 'JSON',
+                data: data,
+                success: function (r, xhr) {
+
+                    window.ocWidgetServerDate = new Date(xhr.getResponseHeader('Date'));
+
+                    if(ocWidget.getSettings.doNotDisplay()){
+                        if (ocWidget.options.behaviour.debug){
+                            console.log('ocWidget: do not display.');
+                        }
+
+                        if(ocWidget.chat.is.opened){
+                            ocWidget.destroy();
+                        }
+
+                        return;
+                    }
+
+                    if (ocWidget.options.behaviour.debug)
+                        console.log('ocWidget: init -> success');
+
+                    if (r.errors === undefined) {
+
+                        ocWidget.init.isDone = true;
+
+                        var token = ocWidget.options.settings.token;
+
+                        if (token !== r.token) {
+                            token = ocWidget.options.settings.token = r.token;
+                            // ЧИСТИМ СТОРАДЖ
+                            ocWidget.storage.local.reset();
+                            ocWidget.storage.session.reset();
+                            ocWidget.storage.local.set('token', token);
+                            ocWidget.storage.local.set('sessionCode', r.code);
+                        }
+
+                        // Сохранение login
+                        if (ocWidget.options.auth.login)
+                            ocWidget.storage.local.set('auth-login', ocWidget.options.auth.login);
+                        // Сохранение channelId
+                        if (ocWidget.options.channelId)
+                            ocWidget.storage.local.set('channelId', ocWidget.options.channelId);
+                        if (ocWidget.bar.is.rendered && !ocWidget.options.behaviour.showWidgetOnlyIfAgentsOnline) {
+                            if (ocWidget.storage.local.get('chat_state') == 'opened') {
+                                callback = ocWidget.chat.init;
+                            } else {
+                                ocWidget.bar.render();
+                            }
+                        }
+
+                        //isChatOpened shouldn't work on mobile devices and with isBarShown setting set to true
+                        if (ocWidget.options.behaviour.isChatOpened && !ocWidget.options.behaviour.mobile && ocWidget.options.behaviour.isBarShown) {
+                            ocWidget.storage.local.set('chat_state', 'opened');
+                        }
+
+                        if (again && ocWidget.storage.local.get('chat_state') == 'opened') {
+                            RTC('#ocWidget-sessionCode').innerHTML = r.code;
+                            ocWidget.chat.show();
+                            ocWidget.chat.loading.show();
+                        }
+
+                        again = again || callback;
+
+                        ocWidget.tools.handler();
+                        ocWidget.websocket.connect(again);
+
+                    }
+
+                },
+
+                loading: function (r) {
+
+                },
+
+                error: function (r) {
+                    if (ocWidget.options.behaviour.debug)
+                        console.log('ocWidget: install error');
+
+                    setTimeout(ocWidget.init.start, 10000);
+                }
+
+            });
+
+        }
+    },
+
+    destroy: function () {
+        ocWidget.websocket.disconnect();
+        ocWidget.auth.isDone = false;
+        ocWidget.auth.inProgress = false;
+        ocWidget.chat.msg.pagination.active = false;
+        ocWidget.storage.local.set('chat_destroyed', true);
+    },
+
+    /**
+     * Переинициализация
+     * если ничего не передано авторизационные данные сбрасываются
+     * @param {Object} authData авторизационные данные
+     * @param {String} authData.login логин
+     * @param {String} authData.full_name string ФИО
+     * @param {Number} authData.phone телефон
+     * @param {String} authData.group_id id группы
+     * @param {Object} authData.ls личный счет
+     */
+    reAuth: function(authData){
+        ocWidget.destroy();
+        //ocWidget.storage.local.reset();
+        ocWidget.storage.session.reset();
+        ocWidget.options.auth = {};
+
+        ocWidget.chat.loading.show();
+        ocWidget.chat.msg.pagination.clearHistory();
+        /**
+         * удаление информации о запросе кобраузинга
+         */
+        ocWidget.chat.msg.cobrowsing.message = {};
+
+        if(typeof authData == 'object' && Object.keys(authData).length){
+            ocWidget.options.auth = authData;
+            if(ocWidget.options.auth.login){
+                ocWidget.storage.local.set('auth-login', ocWidget.options.auth.login);
+            }
+            ocWidget.init.start(function(){
+                ocWidget.storage.local.set('client-info', authData);
+                ocWidget.auth.request();
+            });
+        } else {
+            ocWidget.init.start();
+        }
+    },
+
+    /**
+     * Логика WS запроса авторизации
+     * @namespace
+     * @type {Object}
+     */
+    auth: {
+
+        startMessage: '',
+
+        isDone: false,
+
+        inProgress: false,
+
+        // Дефолтный объект клиента
+        client: {
+            name: 'Имя',
+            surname: 'Фамилия',
+            mail: '@mail',
+            phone: '+7( ___ ) ___ - __ - __'
+        },
+
+        // Дефолтный объект оператора
+        operator: {
+            group_id: 1,
+            agent_name: 'Оператор',
+            group_name: 'Техподдержка',
+            agent_photo: ocWidget.options.behaviour.styles.logo.imgBase64,
+            agent_id: 1
+        },
+
+        /**
+         * ЗАПРОС АВТОРИЗАЦИИ
+         * @param  {object} info - объект авторизации из пречат полей
+         * @return {void}
+         */
+        request: function (info) {
+
+            if (ocWidget.options.behaviour.debug)
+                console.log('ocWidget: authorization');
+
+            if (this.inProgress) return false;
+
+            // Объект который мы отправим в запросе
+            ocWidget.options.settings.auth = ocWidget.tools.objectAssign({}, info,
+            ocWidget.storage.local.get('client-info'), ocWidget.options.auth);
+
+            var uuid = ocWidget.methods.auth.uuid = ocWidget.tools.randomStr(10);
+            // client_data из конфига json если имеется (для плагина)
+            var client_data = (ocWidget.options.behaviour.client_data && Object.keys(ocWidget.options.behaviour.client_data).length ? ocWidget.options.behaviour.client_data : ocWidget.options.settings.auth);
+
+
+            var data = ocWidget.methods.auth.request = {
+                action: 'auth',
+                client_data: client_data,
+                uuid: uuid
+            };
+
+            // Доклеиваем несколько параметров, если они есть
+            if (ocWidget.options.settings.auth.minerva_token) data.minerva_token = ocWidget.options.settings.auth.minerva_token;
+            if (ocWidget.options.behaviour.agent_id) data.agent_id = ocWidget.options.behaviour.agent_id;
+
+
+            this.inProgress = true;
+
+            // Отправляем запрос
+            ocWidget.websocket.send(data);
+
+            ocWidget.chat.loading.show();
+        },
+
+        /**
+         * Обработка auth_reply
+         * @param  {object} data - Объект auth_reply
+         * @return {object}
+         */
+        response: function (data) {
+
+            // Сохраняем текст для отображения
+            this.startMessage = data.start_message;
+
+            if (ocWidget.options.behaviour.debug)
+                console.log('ocWidget: auth -> success');
+
+            if (data.success) {
+                setTimeout(function () {
+                    ocWidget.auth.isDone = true;
+                    ocWidget.auth.inProgress = false;
+                }, 100);
+
+                // Перезагружаем объект this.operator
+                var operator = ocWidget.storage.local.get('operator');
+                for (var info in operator) {
+                    if(operator.hasOwnProperty(info)) {
+                        ocWidget.auth.operator[info] = operator[info];
+                    }
+                }
+
+                // На всякий случай передаем параметры в авторизацию с пречат полями
+                ocWidget.chat.auth.response(data);
+
+                // При F5 вставляем неотправленный текст в textarea
+                if (ocWidget.storage.local.get('send_message')) {
+                    ocWidget.chat.msg.el.msgTextarea.value = ocWidget.storage.local.get('send_message');
+                    ocWidget.chat.msg.textarea.resize();
+                    ocWidget.chat.msg.textarea.block.init(ocWidget.chat.msg.el.msgTextarea);
+                }
+
+                ocWidget.chat.loading.hide();
+
+            } else setTimeout(this.request, 5000);
+        },
+
+        /**
+         * Запрос информации о наличии свободных операторов
+         * Производится если еще не было авторизации
+         * или при отправке сообщения из пречат-полей
+         * @param {object} locationData передаваемые дополнительные поля
+         * @param locationData['mrf'] id мрф
+         * @param locationData['skillId'] id скиллгруппы
+         */
+        check_chat_slot_available: function (locationData, isPrechat) {
+            if (!isPrechat && (ocWidget.auth.inProgress || ocWidget.auth.isDone)) {
+                return false;
+            }
+
+            var data = {
+                action: 'check_chat_slot_available',
+                channelId: ocWidget.options.channelId,
+                uuid: ocWidget.tools.randomStr(10)
+            };
+
+            if (locationData && Object.keys(locationData).length){
+                for (var key in locationData){
+                    if(locationData.hasOwnProperty(key)) {
+                    data[key] = locationData[key];
+                    }
+                }
+            }
+
+            ocWidget.chat.is.opened && ocWidget.chat.loading.show();
+            ocWidget.websocket.send(data);
+        }
+
+    },
+
+    /**
+     * Подключение стилей и последующий вызов отрисовки БАРА и ВИДЖЕТА
+     * @namespace
+     * @type {Object}
+     */
+    render: {
+
+        is: {
+            rendered: false
+        },
+
+        /**
+         * Подключить CSS
+         * и svg-иконки
+         * @return {void}
+         */
+        start: function () {
+            if (ocWidget.render.is.rendered) return;
+
+            ocWidget.render.is.rendered = true;
+
+            var head = document.getElementsByTagName('head')[0],
+                path = 'src',
+                css = ocWidget.tpls.css(ocWidget.options.behaviour.styles);
+
+            var styles = RTC().create('style', {
+                type: 'text/css'
+            });
+
+            if (styles.styleSheet)
+                styles.styleSheet.cssText = css;
+            else
+                styles.appendChild(document.createTextNode(css));
+
+            var ocWidget_css = RTC().create('link', {
+                rel: 'stylesheet',
+                type: 'text/css',
+                href: ocWidget.pathConstructor.getWidgetRootPath() + path + '/css/ocWidget.css?ver=' + ocWidget.version
+            });
+
+            head.appendChild(ocWidget_css);
+
+            ocWidget.el.widget = RTC().create('div', {
+                className: 'ocWidget',
+                id: 'ocWidget'
+            });
+
+            if(ocWidget.options.behaviour.isSessionCode || ocWidget.tpls.channels.getCountOneTypeChannels()){
+                ocWidget.options.behaviour.menu = 1
+            }
+
+            if (ocWidget.options.behaviour.isSessionCode) RTC(ocWidget.el.widget).addClass('ocWidget-codeSession');
+            if (ocWidget.options.behaviour.menu) RTC(ocWidget.el.widget).addClass('ocWidget-menuDisplay');
+            if (ocWidget.options.behaviour.mobile) RTC(ocWidget.el.widget).addClass('ocWidget-mobile');
+
+            ocWidget_css.onload = function () {
+                var container;
+                if (ocWidget.tools.isSelectorValid(ocWidget.options.behaviour.clientPageSelector)) {
+                    container = document.querySelector(ocWidget.options.behaviour.clientPageSelector);
+                } else {
+                    container = document.body;
+                }
+
+                head.appendChild(styles);
+                ocWidget.tpls.insertInToDom(container, ocWidget.el.widget);
+                ocWidget.bar.render();
+                ocWidget.chat.render();
+                ocWidget.tpls.insertInToDom(ocWidget.el.widget, ocWidget.tpls.svgIcons.getObjectWithIconsSymbols());
+            };
+        }
+    },
+
+    options: ocWidget.options,
+
+    locale: ocWidget.locale,
+
+    JSlogging: ocWidget.JSlogging,
+
+    pathConstructor: ocWidget.pathConstructor,
+
+    getSettings: ocWidget.getSettings
+
+};

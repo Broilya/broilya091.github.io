@@ -1,0 +1,266 @@
+'use strict';
+
+RTC = function (selector) {
+    return new RTC.obj.init(selector);
+};
+
+RTC.obj = RTC.prototype = {
+
+    element: '',
+
+    init: function (selector) {
+
+        if (!selector) {
+            return this;
+        }
+        ;
+
+        if (typeof selector === 'string') {
+            this.element = document.querySelectorAll(selector);
+            return !this.element.length ? false : this.element.length == 1 ? this.element[0] : this.element;
+        }
+        ;
+
+        if (selector) {
+            this.element = selector;
+            return this;
+        }
+    },
+
+    el: function () {
+        return this.element;
+    },
+
+    append: function (child) {
+        this.element.appendChild(child);
+    },
+
+    ajax: function (params) {
+        var request = new XMLHttpRequest();
+        request.open(params.type, params.url, true);
+        request.onload = function () {
+            if (request.status >= 200 && request.status < 400) {
+
+                params.data.status = 'SUCCESS';
+
+                var response = request.responseText ? JSON.parse(request.responseText) : '';
+
+                params.success(response, request);
+
+            } else {
+
+                params.data.status = 'ERROR';
+
+                console.log('ocWidget: Server response error')
+
+            }
+
+            if (ocWidget.options.behaviour.logging.http) {
+                params.data.action = params.url;
+                params.data.response = request.responseText;
+                ocWidget.JSlogging.write(params.data);
+            }
+
+        };
+
+        request.onerror = function () {
+            if (ocWidget.options.behaviour.logging.http) {
+                params.data.action = params.url;
+                params.data.status = 'ERROR';
+                params.data.response = request.responseText;
+                ocWidget.JSlogging.write(params.data);
+            }
+            params.error(request.responseText);
+        };
+
+        if (params.type === 'POST') {
+            request.setRequestHeader('Content-Type', 'application/x-www-form-urlencoded; charset=UTF-8');
+
+            var data = '',
+                key;
+
+            for (key in params.data) {
+                if(params.data.hasOwnProperty(key)) {
+                    data += key + '=' + params.data[key] + '&';
+                }
+            }
+            ;
+
+            request.send(data);
+            return;
+        }
+        ;
+
+        request.send();
+
+    },
+
+    trigger: function (myEvent, data) {
+
+        var event;
+
+        event = document.createEvent('CustomEvent');
+        event.initCustomEvent(myEvent, true, true, 'customEvent');
+
+        this.element.dispatchEvent(event);
+
+        return true;
+    },
+
+    extend: function (out) {
+        out = out || {};
+
+        for (var i = 1; i < arguments.length; i++) {
+            var obj = arguments[i];
+
+            if (!obj)
+                continue;
+
+            for (var key in obj) {
+                if (obj.hasOwnProperty(key)) {
+                    if (typeof obj[key] === 'object')
+                        out[key] = deepExtend(out[key], obj[key]);
+                    else
+                        out[key] = obj[key];
+                }
+            }
+        }
+
+        return out;
+    },
+
+    create: function (element, attributes) {
+        var el = document.createElement(element);
+
+        if (typeof attributes === 'string') {
+            el.className += '' + attributes;
+            return el;
+        }
+        ;
+
+        for (var attr in attributes) {
+            if(attributes.hasOwnProperty(attr)) {
+                el[attr] = attributes[attr];
+            }
+        }
+        ;
+
+        return el;
+    },
+
+    remove: function () {
+        if (this.element) {
+            this.element.parentNode.removeChild(this.element);
+        }
+        return false;
+    },
+
+    elementLocation: function(el){
+
+
+        function elemLocation(el) {
+            //assert(el !== null, "Got null element");
+    
+            if (el[0] && el.attr && el[0].nodeType == 1) {
+                // Or a jQuery element not made by us
+                el = el[0];
+            }
+            if (el.tagName == "BODY") {
+                return "body";
+            }
+            if (el.tagName == "HEAD") {
+                return "head";
+            }
+            if (el === document) {
+                return "document";
+            }
+            var parent = el.parentNode;
+            if ((!parent) || parent == el) {
+                return "body";
+            }
+            var parentLocation = elemLocation(parent);
+            var children = parent.childNodes;
+            var _len = children.length;
+            var index = 0;
+            for (var i = 0; i < _len; i++) {
+                if (children[i] == el) {
+                    break;
+                }
+                if (children[i].nodeType == document.ELEMENT_NODE) {
+                    /*if (children[i].className.indexOf("XXX") != -1) {
+                     // Don't count our UI
+                     continue;
+                     }*/
+                    // Don't count text or comments
+                    index++;
+                }
+            }
+            return parentLocation + "|" + (index + 1) + "";
+        }
+
+        if(el.id){
+            return '#' + el.id
+        } else {
+            return elemLocation(el);
+        }
+    },
+
+    findElement: function findElem(loc) {
+        if(!/#/i.test(loc)){
+            loc = loc.replace(/\|([0-9]+)/gi, ' :nth-child($1)');
+        }
+        return document.querySelector(loc);
+    },
+
+    obj_update: function (obj1, obj2) {
+        for (var key in obj1) {
+            if(obj1.hasOwnProperty(key)) {
+                obj2[key] && (obj1[key] = obj2[key]);
+            }  
+        }
+        return obj1;
+    },
+
+
+    hasClass: function (className) {
+        if (!this.element.tagName) return false;
+        if (this.element.classList)
+            return this.element.classList.contains(className);
+        else
+            return new RegExp('(^| )' + className + '( |$)', 'gi').test(this.element.className);
+    },
+
+    addClass: function (className) {
+        if (!this.element.tagName) return false;
+        if (this.element.classList)
+            this.element.classList.add(className);
+        else
+            this.element.className += ' ' + className;
+    },
+
+    toggleClass: function (className) {
+        if (this.element.classList) {
+            this.element.classList.toggle(className);
+        } else {
+            var classes = this.element.className.split(' ');
+            var existingIndex = classes.indexOf(className);
+
+            if (existingIndex >= 0)
+                classes.splice(existingIndex, 1);
+            else
+                classes.push(className);
+
+            this.element.className = classes.join(' ');
+        }
+    },
+
+    removeClass: function (className) {
+        if (!this.element.tagName) return false;
+        if (this.element.classList)
+            this.element.classList.remove(className);
+        else
+            this.element.className = this.element.className.replace(new RegExp('(^|\\b)' + className.split(' ').join('|') + '(\\b|$)', 'gi'), ' ');
+    }
+};
+
+RTC.obj.init.prototype = RTC.obj;

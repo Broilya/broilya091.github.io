@@ -1,0 +1,204 @@
+/**
+ * @file МОДУЛЬ DRAGNDROP
+ */
+
+/**
+ * DRAG&DROP ВИДЖЕТА
+ * @namespace
+ * @type {Object}
+ */
+ocWidget.dragndrop = {
+
+    shift: {
+        X: 0,
+        Y: 0
+    },
+
+    coords: {},
+
+    el: null,
+
+    /**
+     * Включить dragndrop
+     * @param  {node} handler - элемент за который двигать [верхняя панель]
+     * @param  {node} element - элемент который двигается
+     * @return {boolean}         - возвращается false, как preventDefault()
+     */
+    init: function (handler, element) {
+
+        if (ocWidget.options.behaviour.mobile) return;
+
+        this.handler = handler = handler.children[0];
+
+        var self = this;
+
+        this.el = element;
+
+        RTC(ocWidget.el.widget).addClass('ocWidget-dragndrop-active');
+
+        if (false) {
+
+            handler.addEventListener("touchstart", function (e) {
+                if (ocWidget.options.behaviour.debug)
+                    console.log('touchstart', e)
+                event.preventDefault();
+                event.stopPropagation();
+
+
+                // if (RTC(e.target).hasClass('ocWidget__chat__top-menu') ||
+                //     RTC(e.target).hasClass('ocWidget__chat__top-icoX')) return;
+
+                if (event.targetTouches.length == 1) {
+                    var touch = e.targetTouches[0];
+                    self.start(touch.pageX, touch.pageY);
+                }
+
+                // self.start(e.clientX, e.clientY);
+                document.addEventListener("touchend", function (e) {
+                    if (ocWidget.options.behaviour.debug)
+                        console.log('touchend', e)
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (event.targetTouches.length == 1) {
+                        var touch = e.targetTouches[0];
+                        self.stop();
+                    }
+
+                }, false);
+
+                document.addEventListener("touchmove", function (e) {
+                    if (ocWidget.options.behaviour.debug)
+                        console.log('touchmove', e)
+                    event.preventDefault();
+                    event.stopPropagation();
+                    if (event.targetTouches.length == 1) {
+                        var touch = e.targetTouches[0];
+                        self.move(touch.pageX, touch.pageY);
+                    }
+                }, false);
+
+            }, false);
+
+            return false;
+
+        } else {
+
+            handler.onmousedown = function (e) {
+
+                var tgt = e.target;
+
+                while (tgt !== null) {
+                    if (RTC(tgt).hasClass('ocWidget__chat__top-menu') ||
+                        RTC(tgt).hasClass('ocWidget__chat__top-icoX')) return false;
+                    else tgt = tgt.parentElement
+                }
+
+                self.start(e.clientX, e.clientY);
+
+                document.addEventListener('mousemove', self.move);
+
+                document.addEventListener('mouseup', self.stop);
+
+                e.preventDefault();
+
+            };
+        }
+        ;
+
+        return false;
+
+    },
+
+    /**
+     * Коллбек - срабатывает при mousedown
+     * @param  {Number} X - координата window.x
+     * @param  {Number} Y - координата window.y
+     * @return {void}
+     */
+    start: function (X, Y) {
+
+        if (ocWidget.options.behaviour.mobile) return;
+
+        ocWidget.dragndrop.shift.X = X - ocWidget.dragndrop.el.getBoundingClientRect().left;
+        ocWidget.dragndrop.shift.Y = Y - ocWidget.dragndrop.el.getBoundingClientRect().top;
+
+        var pos = {
+            clientX: X,
+            clientY: Y,
+            type: 'start'
+        };
+
+        ocWidget.dragndrop.move(pos);
+
+        RTC(ocWidget.el.widget).addClass('ocWidget-dragndrop-inProcess');
+    },
+
+    /**
+     * Коллбек - срабатывает при mouseup
+     * @return {void}
+     */
+    stop: function () {
+
+        if (ocWidget.options.behaviour.mobile) return;
+
+        // document.onmousemove = document.onmouseup = document.ontouchmove = document.ontouchend = null;
+
+        document.removeEventListener('mousemove', ocWidget.dragndrop.move);
+
+        document.removeEventListener('mouseup', ocWidget.dragndrop.stop);
+
+        ocWidget.dragndrop.el.style.top = ocWidget.dragndrop.el.style.top;
+        ocWidget.dragndrop.el.style.position = 'fixed';
+
+        RTC(ocWidget.el.widget).removeClass('ocWidget-dragndrop-inProcess');
+    },
+
+    /**
+     * Коллбек - срабатывает при mousemove
+     * @param  {event} e - Объект события браузера
+     * @return {void}
+     */
+    move: function (e) {
+
+        if (ocWidget.options.behaviour.mobile) return;
+
+        if (!ocWidget.chat.is.rendered) return;
+
+        var newX = e.type ? e.clientX - ocWidget.dragndrop.shift.X : e.clientX;
+        var newY = e.type ? e.clientY - ocWidget.dragndrop.shift.Y : e.clientY;
+
+        var newBottom = newY + ocWidget.dragndrop.el.offsetHeight;
+
+        if (newY < 20) {
+            newY = 20;
+        }
+        if (newY > document.documentElement.clientHeight - ocWidget.dragndrop.el.offsetHeight - 20) {
+            newY = document.documentElement.clientHeight - ocWidget.dragndrop.el.offsetHeight - 20;
+        }
+        if(document.documentElement.clientHeight === ocWidget.dragndrop.el.offsetHeight) {
+            newY = 0;
+        }
+
+        if (newX < 20) {
+            newX = 20;
+        }
+        if (newX > document.documentElement.clientWidth - ocWidget.dragndrop.el.offsetWidth - 20) {
+            newX = document.documentElement.clientWidth - ocWidget.dragndrop.el.offsetWidth - 20;  
+        }
+        if(document.documentElement.clientWidth === ocWidget.dragndrop.el.offsetWidth) {
+            newX = 0;
+        }
+
+        ocWidget.dragndrop.el.style.left = newX + 'px';
+        ocWidget.dragndrop.el.style.top = newY + 'px';
+
+        ocWidget.dragndrop.coords.left = newX;
+        ocWidget.dragndrop.coords.top = newY;
+
+        ocWidget.storage.local.set('chat_position', {X: newX, Y: newY});
+
+        return false;
+
+    },
+
+};
